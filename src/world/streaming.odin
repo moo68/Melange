@@ -4,6 +4,7 @@ import "core:math"
 import "core:mem"
 import "core:slice"
 import "core:time"
+import "melange:prof"
 
 // Keeps the chunks around a moving center loaded: a horizontal circle of
 // `radius` chunks, `vertical` chunks above and below. Loads nearest-first and
@@ -102,6 +103,7 @@ column_heights :: proc(s: ^Streamer, seed: i64, cx, cz: i32) -> (ch: ^Column_Hei
 	if cached, ok := s.heights[{cx, cz}]; ok {
 		return cached, nil
 	}
+	prof.scope("column heights")
 	ch = new(Column_Heights, s.allocator) or_return
 	column_heights_compute(ch, seed, cx, cz)
 	s.heights[{cx, cz}] = ch
@@ -130,6 +132,7 @@ stream_meshed_distance :: proc "contextless" (cfg: Stream_Config) -> f32 {
 
 // Call once per frame with the chunk the camera/player is in.
 streamer_update :: proc(s: ^Streamer, w: ^World, center: [3]i32) -> (err: mem.Allocator_Error) {
+	prof.scope("streamer_update")
 	clear(&s.unloaded)
 	if !s.has_center || center != s.center {
 		s.center = center
@@ -144,6 +147,7 @@ streamer_update :: proc(s: ^Streamer, w: ^World, center: [3]i32) -> (err: mem.Al
 		if world_get_chunk(w, c) == nil {
 			continue
 		}
+		prof.scope("unload chunk")
 		world_unload_chunk(w, c)
 		append(&s.unloaded, c)
 	}
@@ -162,6 +166,7 @@ streamer_update :: proc(s: ^Streamer, w: ^World, center: [3]i32) -> (err: mem.Al
 			continue
 		}
 		ch := column_heights(s, w.seed, q.coord.x, q.coord.z) or_return
+		prof.scope("gen chunk")
 		generate_chunk_from_heights(c, q.coord, ch)
 		loaded += 1
 	}
@@ -177,6 +182,7 @@ streamer_update :: proc(s: ^Streamer, w: ^World, center: [3]i32) -> (err: mem.Al
 
 @(private)
 rebuild_queues :: proc(s: ^Streamer, w: ^World) {
+	prof.scope("rebuild queues")
 	cfg := s.config
 
 	clear(&s.load_queue)

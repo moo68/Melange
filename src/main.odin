@@ -4,15 +4,29 @@ import "core:fmt"
 import "core:math"
 import "melange:geom"
 import "melange:player"
+import "melange:prof"
 import "melange:render"
 import "melange:world"
 import rl "third_party:raylib"
 import "third_party:raylib/rlgl"
 
+// Written by `./run.sh profile` builds (-define:PROFILE=true); open it in Spall.
+TRACE_PATH :: "build/trace.spall"
+
 main :: proc() {
 	opts, ok := parse_args()
 	if !ok {
 		return
+	}
+
+	if !prof.init(TRACE_PATH) {
+		fmt.eprintln("failed to create", TRACE_PATH)
+		return
+	}
+	defer prof.shutdown()
+	when prof.ENABLED {
+		fmt.println("profiling: recording to", TRACE_PATH)
+		defer fmt.println("profiling: trace written to", TRACE_PATH)
 	}
 
 	rl.SetConfigFlags({.WINDOW_RESIZABLE, .VSYNC_HINT, .MSAA_4X_HINT})
@@ -62,7 +76,11 @@ main :: proc() {
 	cull_frozen := false
 	frustum: geom.Frustum
 
-	for !rl.WindowShouldClose() {
+	for frame := 0; !rl.WindowShouldClose(); frame += 1 {
+		if opts.frames > 0 && frame >= opts.frames {
+			break
+		}
+		prof.scope("frame")
 		player.update_fly_camera(&camera, ignore_mouse_frames == 0)
 		ignore_mouse_frames = max(ignore_mouse_frames - 1, 0)
 		if rl.IsKeyPressed(.F1) {
@@ -98,6 +116,10 @@ main :: proc() {
 		rl.EndMode3D()
 
 		render.draw_debug_overlay(&r, &w, &s, camera, wireframe, cull_frozen)
-		rl.EndDrawing()
+		{
+			// Swaps buffers: includes the vsync wait and any GPU sync.
+			prof.scope("EndDrawing")
+			rl.EndDrawing()
+		}
 	}
 }

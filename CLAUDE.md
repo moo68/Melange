@@ -11,11 +11,12 @@ Always build from the project root via `run.sh`:
 | `./run.sh`           | Debug build to `build/melange`, then run it    |
 | `./run.sh release`   | Optimized build (`-o:speed -no-bounds-check`) + run |
 | `./run.sh build`     | Debug build only                               |
-| `./run.sh check`     | Type-check only — use this after every edit    |
-| `./run.sh test`      | Run `odin test` on `tests/`                    |
+| `./run.sh profile`   | Release build with Spall profiling (`build/melange-profile`) + run; writes `build/trace.spall` |
+| `./run.sh check`     | Type-check only (both normal and `PROFILE=true` builds) — use this after every edit |
+| `./run.sh test`      | Run `odin test` on `tests/`, then `tests/prof/` with `-define:PROFILE=true` |
 | `./run.sh terrain-preview [--seed N] [--out DIR]` | Render the terrain to `build/terrain-preview/{map,profile}.png` + print stats (no window) |
 
-Args after the mode go to the game: `./run.sh debug --seed 42`.
+Args after the mode go to the game: `./run.sh debug --seed 42`. Game args: `--seed N`, `--frames N` (quit cleanly after N frames — for repeatable profiling runs).
 
 - All builds use `-vet -strict-style`; code must pass both (no unused vars/imports, Odin's brace/indent style).
 - **Raylib is vendored** in `third_party/raylib/`: Odin's raylib bindings plus the official raylib **6.0** `linux/libraylib.a`, linked statically (`-define:RAYLIB_SHARED=false`). Import it as `import rl "third_party:raylib"` — **never `vendor:raylib`**; the system Odin's copy is broken (Arch's package symlinks to a raylib 6.0 .so that pacman replaced with 6.2). If upgrading raylib, replace the bindings and `libraylib.a` together so versions match.
@@ -30,15 +31,16 @@ src/mesh/       chunk meshing (face culling, later greedy meshing), vertex data
 src/render/     camera, shaders, texture atlas, draw calls, debug overlay
 src/player/     input, movement, physics/collision against voxels, block picking
 src/geom/       pure math, no raylib (frustum, AABB; later ray/voxel DDA) — testable without linking raylib
+src/prof/       Spall profiling scopes (leaf; compiled out unless -define:PROFILE=true)
 assets/shaders/ GLSL shaders (GLSL 330 — raylib's default desktop GL)
 assets/textures/ block texture atlas and other images
-tests/          odin test package(s)
+tests/          odin test package(s); tests/prof/ is built separately with PROFILE=true
 tools/          dev tools, each its own package (tools/terrainviz: terrain preview)
 third_party/    vendored dependencies (raylib bindings + static lib); don't edit
 build/          build output (gitignored)
 ```
 
-Each `src/` subdirectory is its own Odin package. Import them through the `melange` collection, e.g. `import "melange:world"`. Keep dependencies one-directional: `main → player, render → mesh → world`; `geom` is a leaf any package may import. Tests don't link raylib, so code that needs tests must not live in a package that imports raylib. `world` must not import raylib rendering code (math types like `[3]f32` are fine).
+Each `src/` subdirectory is its own Odin package. Import them through the `melange` collection, e.g. `import "melange:world"`. Keep dependencies one-directional: `main → player, render → mesh → world`; `geom` and `prof` are leaves any package may import. Tests don't link raylib, so code that needs tests must not live in a package that imports raylib. `world` must not import raylib rendering code (math types like `[3]f32` are fine).
 
 ## Working style
 
@@ -49,18 +51,18 @@ The user wants to build this **one step at a time**: for a new feature, explain 
 - **Done — phase 1:** chunk meshing with face culling (in-chunk and inter-chunk), fly camera.
 - **Done — phase 2:** regions + world storage, streaming, frustum culling, noise terrain (plains + mountains), per-column height cache, quick perf wins.
 - **Done — phase 3:** texture atlas (seamless, `texelFetch`), chunk shader, fog, ambient occlusion.
+- **Done — Spall profiling** (see "Profiling" below).
 - **Next — phase 4 (on hold until the user says go):**
   1. Block picking: voxel DDA raycast (Amanatides–Woo) in `geom` → hit block + face; outline the targeted block.
   2. Break (left click → AIR) / place (right click, against the hit face) via `world_set_block` (exercises the 26-neighbor dirty marking).
   3. Walking physics in `player/`: AABB player, gravity, jump, per-axis swept collision; key to toggle back to fly mode.
 - **Later:** phase 5 worker threads for gen/meshing (not needed yet per measurements); phase 6 compact `rlgl` vertex format, light propagation, water/transparent pass, greedy/bitmask meshing.
 - **Planned, on hold (discussed, not built):**
-  - **Spall profiling:** a leaf `src/prof/` package wrapping `core:prof/spall` (`prof.init/shutdown/scope`, `@(thread_local)` buffer), compiled out unless `-define:PROFILE=true`; `./run.sh profile` = release build writing `build/trace.spall` for the Spall viewer (gravitymoth.com/spall). Instrument frame, streamer (+ per-chunk gen), renderer update (+ mesh/upload per chunk), draw, and `EndDrawing` separately (vsync wait). Manual scopes only — not Odin's auto-instrumentation.
   - **Terrain tuning interface:** turn the `TERRAIN_*` constants into a params struct that `tools/terrainviz` can override from the command line, later maybe a live in-game panel.
 
 ## Controls (debug build)
 
-Mouse look; WASD move (horizontal); Space / Left Ctrl up / down; Shift = 5× sprint; F1 wireframe; F2 freeze frustum culling; Esc quit. Mouse look ignores the first 2 frames after cursor capture (raylib reports a bogus jump). The overlay shows FPS, position, seed, chunk/draw/cull counts, streaming queues and per-chunk gen/mesh times.
+Mouse look; WASD move (horizontal); Space / Left Ctrl up / down; Shift = 5× sprint; F1 wireframe; F2 freeze frustum culling; Esc quit. `--frames N` quits after N frames. Mouse look ignores the first 2 frames after cursor capture (raylib reports a bogus jump). The overlay shows FPS, position, seed, chunk/draw/cull counts, streaming queues and per-chunk gen/mesh times.
 
 ## Engine design notes
 
@@ -93,7 +95,15 @@ RAM follows writes, not the 4 MB reservation: region memory is anonymous `mmap`,
 - **Neighbor rule:** a chunk is meshed only when all 6 neighbors are loaded (`world.neighbors_complete`). Otherwise its dirty flag is cleared and any mesh dropped; `world_create_chunk` re-dirties it when the missing neighbor arrives. So the outermost loaded ring (incl. the top/bottom of the vertical range) is loaded but never meshed, and no faces are ever emitted toward unloaded space. (`mesh.build_chunk_mesh` still treats `nil` neighbors as air, but the renderer never passes one.)
 - **Measured cost** (this dev machine, single-threaded, release, default 7,497-chunk streaming area, plains+mountains terrain, 2026-11-22): gen ≈ **28 ms** total with the height cache (441 columns sampled; 135 ms uncached), debug 214 ms. Mesh ≈ 21 ms total (surface ~0.028 ms ≈ 98 ns/face). Upload ≈ 0.04 ms per mesh. Debug meshing is ~16× slower than release.
 - **Fast paths** (keep them correct if terrain or block rules change): the streamer skips height computation for chunks above `TERRAIN_MAX_HEIGHT`; generation skips chunks above their column's `max_height` and fills chunks below `TERRAIN_ALL_STONE_BELOW` with stone — this relies on `terrain_height` clamping to `TERRAIN_MIN/MAX_HEIGHT`. `build_chunk_mesh` returns no faces immediately when the chunk and all six neighbors' touching layers are fully opaque.
-- **Remaining single-threaded levers**, in order: bitmask ("binary") meshing for surface chunks (the padded 18³ copy and the per-column height cache are done), then `core:prof/spall` instrumentation to measure draw/upload per frame.
+- **Remaining single-threaded levers:** bitmask ("binary") meshing for surface chunks (the padded 18³ copy and the per-column height cache are done). First Spall trace (2026-11-22, 600 frames from startup, release, seed 1337): frame avg 4.2 ms of which `EndDrawing` (vsync, 240 Hz) 3.7 ms → ~0.5 ms CPU/frame. Steady-state CPU: `collect dirty` ~82 µs **every frame** (`world_collect_dirty` scans all region slots even when nothing is dirty — the cheapest win if needed), `renderer_draw` ~75 µs, `streamer_update` ~10 µs when idle, overlay ~38 µs. Per chunk: mesh 5.4 µs avg (14,786, most empty), upload 20 µs (1,479), gen 1.9 µs, column heights 69 µs.
+
+## Profiling (Spall)
+
+- `src/prof/prof.odin` wraps `core:prof/spall`: `prof.init(path)` / `prof.shutdown()` (main thread; init names it "main"), `prof.thread_init(name)` / `thread_shutdown()` for any other thread (phase 5 workers), `prof.scope("name")` (deferred: ends at block exit), `prof.begin`/`prof.end` where a block doesn't fit (`-strict-style` rejects a bare `{` block right after an `if`). Scopes on a thread without a buffer are ignored.
+- `ENABLED :: #config(PROFILE, false)`: off, every proc is empty, so scopes stay in hot code. Manual scopes only — not Odin's auto-instrumentation (would swamp tiny procs).
+- Per-thread 1 MB buffer, written to the file when full (visible as "Spall Trace Buffer Flush") and at shutdown. Killing the process (Ctrl+C / SIGTERM) loses the unwritten tail — quit with Esc / window close / `--frames N`. Init spends 200 ms calibrating the TSC.
+- Current scopes: `frame`, `EndDrawing` (swap + vsync wait + GPU sync), `streamer_update` › `rebuild queues`, `unload chunk`, `column heights`, `gen chunk`; `renderer_update` › `collect dirty`, `mesh chunk`, `upload`; `renderer_draw`; `debug overlay`. Keep names constant (the viewer aggregates by name).
+- View traces at gravitymoth.com/spall/spall-web.html (drag & drop) or the native build (gravitymoth.itch.io/spall). It measures CPU only; GPU time would need GL timer queries.
 
 - **Meshing:** Only emit faces adjacent to transparent/air blocks, including across chunk borders. Re-mesh a chunk (and affected neighbors) when a block changes. Upload with raylib `Mesh` + `UploadMesh`; free with `UnloadMesh` when chunks unload.
 - **Meshes are indexed** with raylib's `u16` indices: 4 vertices + 6 indices per face. A chunk's worst case fits (see above), so one chunk = one `Mesh` per pass, never split. Don't grow `CHUNK_SIZE` past 16 without revisiting this. Two meshes per chunk: opaque and transparent. Chunks with no faces get no mesh and no draw call.

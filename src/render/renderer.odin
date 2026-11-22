@@ -5,6 +5,7 @@ import "core:slice"
 import "core:time"
 import "melange:geom"
 import "melange:mesh"
+import "melange:prof"
 import "melange:world"
 import rl "third_party:raylib"
 import "third_party:raylib/rlgl"
@@ -130,16 +131,20 @@ renderer_destroy :: proc(r: ^Renderer) {
 // Dirty chunks missing a neighbor are cleared and lose any mesh; when the
 // missing neighbor loads, world_create_chunk marks them dirty again.
 renderer_update :: proc(r: ^Renderer, w: ^world.World, center: [3]i32) {
-	clear(&r.dirty)
-	world.world_collect_dirty(w, &r.dirty)
-	clear(&r.order)
-	for c in r.dirty {
-		d := c - center
-		append(&r.order, world.Queued_Chunk{c, d.x * d.x + d.y * d.y + d.z * d.z})
+	prof.scope("renderer_update")
+	{
+		prof.scope("collect dirty")
+		clear(&r.dirty)
+		world.world_collect_dirty(w, &r.dirty)
+		clear(&r.order)
+		for c in r.dirty {
+			d := c - center
+			append(&r.order, world.Queued_Chunk{c, d.x * d.x + d.y * d.y + d.z * d.z})
+		}
+		slice.sort_by(r.order[:], proc(a, b: world.Queued_Chunk) -> bool {
+			return a.dist2 < b.dist2
+		})
 	}
-	slice.sort_by(r.order[:], proc(a, b: world.Queued_Chunk) -> bool {
-		return a.dist2 < b.dist2
-	})
 
 	start := time.tick_now()
 	meshed, processed := 0, 0
@@ -175,6 +180,7 @@ renderer_forget_chunk :: proc(r: ^Renderer, coord: [3]i32) {
 
 // Draws every chunk mesh inside `frustum`. Call between BeginMode3D / EndMode3D.
 renderer_draw :: proc(r: ^Renderer, frustum: ^geom.Frustum, camera_pos: [3]f32) {
+	prof.scope("renderer_draw")
 	camera_pos := camera_pos
 	rl.SetShaderValue(r.shader, r.loc_camera_pos, &camera_pos, .VEC3)
 
@@ -212,8 +218,11 @@ remesh_chunk :: proc(r: ^Renderer, w: ^world.World, coord: [3]i32) -> bool {
 	if !world.neighbors_complete(&faces) {
 		return false
 	}
+	prof.begin("mesh chunk")
 	mesh.build_chunk_mesh_neighborhood(&hood, &r.scratch)
+	prof.end()
 	if mesh.face_count(&r.scratch) > 0 {
+		prof.scope("upload")
 		r.meshes[coord] = upload(&r.scratch)
 	} // else: empty or fully buried: no mesh, no draw call
 	return true

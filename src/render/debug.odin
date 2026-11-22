@@ -2,11 +2,13 @@ package render
 
 import "core:fmt"
 import "core:time"
+import "melange:prof"
 import "melange:world"
 import rl "third_party:raylib"
 
 // Top-left debug text. Call after EndMode3D.
 draw_debug_overlay :: proc(r: ^Renderer, w: ^world.World, s: ^world.Streamer, camera: rl.Camera3D, wireframe, cull_frozen: bool) {
+	prof.scope("debug overlay")
 	buf: [256]u8
 	p := camera.position
 	line :: proc(buf: []u8, y: i32, format: string, args: ..any) {
