@@ -56,7 +56,9 @@ The user wants to build this **one step at a time**: for a new feature, explain 
   1. ~~Block picking~~ done (see "Block picking" below).
   1.5. ~~Crosshair~~ done: `render.draw_crosshair()` after `EndMode3D` (screen space, no UI library).
   2. ~~Break / place~~ done (see "Block editing" below).
-  3. Walking physics in `player/`: AABB player, gravity, jump, per-axis swept collision; key to toggle back to fly mode.
+  3. Walking physics, split in two:
+     - 3a. ~~`Player` owns position + yaw/pitch; camera derived from it (no `UpdateCameraPro`)~~ done — fly mode unchanged.
+     - 3b. **Next (agreed plan):** Minecraft numbers — box 0.6 × 1.8 × 0.6, eye 1.62, walk 4.3 / sprint (Shift) 5.6 b/s, gravity 32 b/s², terminal 60 b/s, jump 8.9 b/s (~1.25 blocks), snappy ground control, ~10% air control. Fixed 60 Hz physics with an accumulator + interpolated eye (mouse look stays per frame). Per-axis swept AABB (Y, then X, then Z; 0.001 skin; no step-up; ceiling bump; jump only on ground, holding Space re-jumps on landing). Unloaded chunks are **solid** for collision; spawn on `terrain_height`, physics waits for the player's chunk + the one below. **F3 = debug mode: toggles fly (noclip, as today) + the top-left overlay together**; start in walk mode with the overlay hidden; switching to walk inside terrain moves up to the first spot the box fits (≤ 128 blocks). Placement refused if the cell overlaps the player box (replaces the eye-cell rule). Pure code: `geom/collide.odin` (sweep, `is_solid` callback), `geom/body.odin` (`body_step(&body, input, dt, ...)`); `player/` does input, fixed-step loop, interpolation, toggle.
 - **Later:** phase 5 worker threads for gen/meshing (not needed yet per measurements); phase 6 compact `rlgl` vertex format, light propagation, water/transparent pass, greedy/bitmask meshing.
 - **Planned, on hold (discussed, not built):**
   - **Edit persistence:** edits are currently lost when their chunk unloads (beyond `radius + unload_margin`) — it's regenerated from noise on return. Accepted for now (2026-11-22). Options discussed: an edit log (`map[[3]i32]Block_ID`, ~16 B/edit) re-applied after generation, eventually saving regions to disk.
@@ -136,6 +138,8 @@ RAM follows writes, not the 4 MB reservation: region memory is anonymous `mmap`,
   - Frame order: pick → edit → (re-pick if changed, for the outline) → stream → `renderer_update`, so an edit is visible the same frame: its ≤ 8 dirty chunks are nearest to the camera and remeshed first within the 64/frame budget. Corner edit ≈ 8 × (mesh + upload) ≈ 0.5 ms release.
   - Tested end to end: a corner placement dirties exactly 8 chunks and darkens the AO of the floor in the chunk diagonally across the corner.
   - Raycast test lesson: an origin exactly on a cell boundary belongs to the cell above (`[c, c+1)`); the random-ray test snaps a third of origins to integers to keep exercising that.
+
+- **Player & camera** (`player/player.odin`): `Player{position, yaw, pitch}` is owned by main; `camera_of(&p)` builds the `rl.Camera3D` each frame (never stored back). Look math is pure in `geom/look.odin`: yaw 0 = +X, increasing toward +Z (= turning right, right = forward × up); pitch up positive, clamped to ±`PITCH_LIMIT` (89°); `look_direction`, `look_basis(yaw)` (horizontal forward/right), `look_angles(dir)`. `update_look` (mouse, raylib's 0.172°/px) keeps yaw in [0, 360). `update_fly` reproduces raylib's CAMERA_FREE (per-key full speed, diagonals √2 faster). In 3a `position` is the eye; in 3b it becomes the feet.
 
 - **No ECS.** World state is plain structs (`World`, `Renderer`, `Player`) owned by `main` and passed to procs. If mobs/items arrive, use a plain `[dynamic]Entity`.
 

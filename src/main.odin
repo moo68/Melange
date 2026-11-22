@@ -59,17 +59,10 @@ main :: proc() {
 	fog_end := world.stream_meshed_distance(s.config)
 	render.renderer_set_fog(&r, fog_end * 0.55, fog_end)
 
-	// TEMPORARY: free-fly camera until real player movement exists.
-	// Mouse look, WASD move, Space/Ctrl up/down, Shift sprint.
-	camera := rl.Camera3D {
-		position   = {0, 50, 0},
-		target     = {20, 40, 20},
-		up         = {0, 1, 0},
-		fovy       = 70,
-		projection = .PERSPECTIVE,
-	}
+	// Fly mode only until step 3b adds walking.
+	pl := player.player_looking_at({0, 50, 0}, {20, 40, 20})
 	rl.DisableCursor()
-	ignore_mouse_frames := 2 // see update_fly_camera
+	ignore_mouse_frames := 2 // see player.update_look
 	wireframe := false
 	// F2 freezes the culling frustum at the current camera so you can fly out
 	// and see which chunks are being culled.
@@ -82,8 +75,10 @@ main :: proc() {
 			break
 		}
 		prof.scope("frame")
-		player.update_fly_camera(&camera, ignore_mouse_frames == 0)
+		player.update_look(&pl, ignore_mouse_frames == 0)
 		ignore_mouse_frames = max(ignore_mouse_frames - 1, 0)
+		player.update_fly(&pl)
+		camera := player.camera_of(&pl)
 		if rl.IsKeyPressed(.F1) {
 			wireframe = !wireframe
 		}
