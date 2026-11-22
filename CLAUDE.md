@@ -52,13 +52,7 @@ The user wants to build this **one step at a time**: for a new feature, explain 
 - **Done — phase 2:** regions + world storage, streaming, frustum culling, noise terrain (plains + mountains), per-column height cache, quick perf wins.
 - **Done — phase 3:** texture atlas (seamless, `texelFetch`), chunk shader, fog, ambient occlusion.
 - **Done — Spall profiling** (see "Profiling" below).
-- **In progress — phase 4:**
-  1. ~~Block picking~~ done (see "Block picking" below).
-  1.5. ~~Crosshair~~ done: `render.draw_crosshair()` after `EndMode3D` (screen space, no UI library).
-  2. ~~Break / place~~ done (see "Block editing" below).
-  3. Walking physics, split in two:
-     - 3a. ~~`Player` owns position + yaw/pitch; camera derived from it (no `UpdateCameraPro`)~~ done — fly mode unchanged.
-     - 3b. ~~Walking physics~~ done (see "Walking physics" below).
+- **Done — phase 4:** block picking (voxel raycast + outline), crosshair, break / place, walking physics (Player + derived camera, AABB collision, fixed 60 Hz, F3 fly/debug mode); render distance raised to 28 chunks. See "Block picking", "Block editing", "Player & camera" and "Walking physics" below.
 - **Later:** phase 5 worker threads for gen/meshing (not needed yet per measurements); phase 6 compact `rlgl` vertex format, light propagation, water/transparent pass, greedy/bitmask meshing.
 - **Planned, on hold (discussed, not built):**
   - **Edit persistence:** edits are currently lost when their chunk unloads (beyond `radius + unload_margin`) — it's regenerated from noise on return. Accepted for now (2026-11-22). Options discussed: an edit log (`map[[3]i32]Block_ID`, ~16 B/edit) re-applied after generation, eventually saving regions to disk.
