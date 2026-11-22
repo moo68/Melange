@@ -21,7 +21,7 @@ Stream_Config :: struct {
 }
 
 DEFAULT_STREAM_CONFIG :: Stream_Config {
-	radius        = 12,
+	radius        = 28,
 	vertical      = 8, // ±128 blocks: covers the tallest peaks (TERRAIN_MAX_HEIGHT) from the plains
 	unload_margin = 2,
 	load_budget   = 32,
