@@ -1,0 +1,43 @@
+# Build output (run.sh writes everything here: game, tests, tools, terrain previews)
+build/
+
+# Stray build artifacts, e.g. from running `odin build` by hand without -out
+# (Odin names the binary after the package directory). Anchored to the root so
+# they can't match the src/ or tools/ directories themselves.
+/src.bin
+/melange
+/terrainviz
+*.o
+*.obj
+*.pdb
+*.exe
+*.dll.exp
+*.lib.exp
+*.ilk
+*.dSYM/
+
+# NOTE: third_party/raylib/**/libraylib.a etc. are vendored on purpose and
+# must stay tracked — don't add *.a / *.so / *.lib here.
+
+# Profiling and debugging output
+*.spall
+perf.data*
+core
+core.*
+vgcore.*
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.\#*
+\#*\#
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code: per-user local settings (shared .claude/settings.json is fine to commit)
+.claude/settings.local.json
