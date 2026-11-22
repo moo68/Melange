@@ -8,7 +8,7 @@ import "melange:world"
 import rl "third_party:raylib"
 
 // Top-left debug text. Call after EndMode3D.
-draw_debug_overlay :: proc(r: ^Renderer, w: ^world.World, s: ^world.Streamer, camera: rl.Camera3D, target: Maybe(geom.Ray_Hit), wireframe, cull_frozen: bool) {
+draw_debug_overlay :: proc(r: ^Renderer, w: ^world.World, s: ^world.Streamer, camera: rl.Camera3D, target: Maybe(geom.Ray_Hit), selected: world.Block_ID, wireframe, cull_frozen: bool) {
 	prof.scope("debug overlay")
 	buf: [256]u8
 	p := camera.position
@@ -20,7 +20,7 @@ draw_debug_overlay :: proc(r: ^Renderer, w: ^world.World, s: ^world.Streamer, ca
 		}
 		rl.DrawText(cstring(raw_data(buf)), 10, y, 20, rl.RAYWHITE)
 	}
-	rl.DrawRectangle(0, 0, 520, 248, {0, 0, 0, 140})
+	rl.DrawRectangle(0, 0, 520, 270, {0, 0, 0, 140})
 	line(buf[:], 10, "FPS %d", rl.GetFPS())
 	line(buf[:], 32, "pos %.1f %.1f %.1f  seed %d", p.x, p.y, p.z, w.seed)
 	line(buf[:], 54, "chunks %d loaded, %d meshed", world.world_loaded_chunk_count(w), len(r.meshes))
@@ -44,8 +44,9 @@ draw_debug_overlay :: proc(r: ^Renderer, w: ^world.World, s: ^world.Streamer, ca
 	} else {
 		line(buf[:], 164, "target none")
 	}
-	line(buf[:], 194, "F1 wireframe [%s]", "on" if wireframe else "off")
-	line(buf[:], 216, "F2 freeze culling [%s]", "on" if cull_frozen else "off")
+	line(buf[:], 186, "place %s  (1 stone, 2 dirt, 3 grass)", world.block_name(selected))
+	line(buf[:], 216, "F1 wireframe [%s]", "on" if wireframe else "off")
+	line(buf[:], 238, "F2 freeze culling [%s]", "on" if cull_frozen else "off")
 }
 
 @(private)

@@ -12,11 +12,5 @@ REACH :: 5.0
 // looking at. Unloaded chunks count as empty.
 pick_block :: proc(w: ^world.World, camera: rl.Camera3D) -> (hit: geom.Ray_Hit, ok: bool) {
 	prof.scope("pick block")
-	return geom.raycast_voxels(camera.position, camera.target - camera.position, REACH, w, is_solid)
-}
-
-@(private)
-is_solid :: proc(w: ^world.World, b: [3]i32) -> bool {
-	id, loaded := world.world_get_block(w, b)
-	return loaded && world.block_is_opaque(id)
+	return geom.raycast_voxels(camera.position, camera.target - camera.position, REACH, w, world.world_is_solid)
 }

@@ -85,3 +85,12 @@ raycast_voxels :: proc(
 		t_max[axis] += t_delta[axis]
 	}
 }
+
+// The empty cell in front of the face a ray hit: where a placed block goes.
+// ok = false if the ray started inside the block (no face to place against).
+place_cell :: proc "contextless" (hit: Ray_Hit) -> (cell: [3]i32, ok: bool) {
+	if hit.normal == {} {
+		return {}, false
+	}
+	return hit.block + hit.normal, true
+}

@@ -55,15 +55,16 @@ The user wants to build this **one step at a time**: for a new feature, explain 
 - **In progress — phase 4:**
   1. ~~Block picking~~ done (see "Block picking" below).
   1.5. ~~Crosshair~~ done: `render.draw_crosshair()` after `EndMode3D` (screen space, no UI library).
-  2. Break (left click → AIR) / place (right click, against the hit face) via `world_set_block` (exercises the 26-neighbor dirty marking).
+  2. ~~Break / place~~ done (see "Block editing" below).
   3. Walking physics in `player/`: AABB player, gravity, jump, per-axis swept collision; key to toggle back to fly mode.
 - **Later:** phase 5 worker threads for gen/meshing (not needed yet per measurements); phase 6 compact `rlgl` vertex format, light propagation, water/transparent pass, greedy/bitmask meshing.
 - **Planned, on hold (discussed, not built):**
+  - **Edit persistence:** edits are currently lost when their chunk unloads (beyond `radius + unload_margin`) — it's regenerated from noise on return. Accepted for now (2026-11-22). Options discussed: an edit log (`map[[3]i32]Block_ID`, ~16 B/edit) re-applied after generation, eventually saving regions to disk.
   - **Terrain tuning interface:** turn the `TERRAIN_*` constants into a params struct that `tools/terrainviz` can override from the command line, later maybe a live in-game panel.
 
 ## Controls (debug build)
 
-Mouse look; WASD move (horizontal); Space / Left Ctrl up / down; Shift = 5× sprint; F1 wireframe; F2 freeze frustum culling; Esc quit. `--frames N` quits after N frames. Mouse look ignores the first 2 frames after cursor capture (raylib reports a bogus jump). The overlay shows FPS, position, seed, chunk/draw/cull counts, streaming queues and per-chunk gen/mesh times, and the targeted block (coords, type, face). The targeted block (within 5 blocks) gets a black wire outline; a white crosshair with a 1-px dark border marks the screen center.
+Mouse look; WASD move (horizontal); Space / Left Ctrl up / down; Shift = 5× sprint; Left click break, right click place (both repeat every 0.2 s while held); 1 / 2 / 3 select stone / dirt / grass to place; F1 wireframe; F2 freeze frustum culling; Esc quit. `--frames N` quits after N frames. Mouse look ignores the first 2 frames after cursor capture (raylib reports a bogus jump). The overlay shows FPS, position, seed, chunk/draw/cull counts, streaming queues and per-chunk gen/mesh times, the targeted block (coords, type, face) and the block selected for placing. The targeted block (within 5 blocks) gets a black wire outline; a white crosshair with a 1-px dark border marks the screen center.
 
 ## Engine design notes
 
@@ -130,6 +131,11 @@ RAM follows writes, not the 4 MB reservation: region memory is anonymous `mmap`,
 - **Block picking:** `geom.raycast_voxels(origin, dir, max_dist, data, is_solid)` (Amanatides–Woo voxel walk; `is_solid` is a parametric callback so `geom` stays independent of `world`) returns `Ray_Hit{block, normal, dist}`. `normal` = outward normal of the face entered, so `block + normal` is where a placed block goes; `{0,0,0}` when the ray starts inside a solid block (no placement then). Cells floor (negatives), zero-direction axes never step, exact edge/corner ties step x before y before z, `max_dist` must be finite. Tested against an exact slab-intersection reference on random rays. `player.pick_block(&w, camera)` casts from the eye along the view direction with `player.REACH :: 5.0`; unloaded chunks count as empty. ~0.5 µs/frame.
   - Crosshair: `geom.crosshair_rects(w, h, arm, thickness)` (pure, tested) gives the two bars; `render.draw_crosshair()` (`render/hud.odin`) draws both dark borders (`pixel_rect_grow` by 1) and then both white bars with `DrawRectangle`, so neither border crosses the other bar. Arm 10 px, thickness 2 (even → symmetric on even screen sizes); recomputed each frame, so it follows window resizes. Not color-inverting (would need a custom blend mode) — revisit if it ever looks wrong.
   - `render.draw_block_outline(block)`: `DrawCubeWires` at 1.002× (no z-fighting with the block's edges), drawn after the chunks inside `BeginMode3D` with depth test on (hidden edges stay hidden).
+
+- **Block editing:** rules live in `world/edit.odin` (testable, no input): `world_is_solid` (loaded + opaque; also what picking uses), `world_break_block(w, hit)` (→ AIR; false if already gone), `world_place_block(w, hit, id, blocked)` into `geom.place_cell(hit)` = `block + normal` (refused with no face, into `blocked` = the eye's cell, or onto non-air; unloaded chunks are refused by `world_set_block`). Step 3 replaces `blocked` with the player AABB. `player.update_block_edit(&Edit_State, ...)` maps input: `geom.repeat_update` per button (fires on press, then every `EDIT_REPEAT` = 0.2 s while held, resets on release, never bursts after a long frame), keys 1–3 → `PLACEABLE`, at most one edit per frame (break wins).
+  - Frame order: pick → edit → (re-pick if changed, for the outline) → stream → `renderer_update`, so an edit is visible the same frame: its ≤ 8 dirty chunks are nearest to the camera and remeshed first within the 64/frame budget. Corner edit ≈ 8 × (mesh + upload) ≈ 0.5 ms release.
+  - Tested end to end: a corner placement dirties exactly 8 chunks and darkens the AO of the floor in the chunk diagonally across the corner.
+  - Raycast test lesson: an origin exactly on a cell boundary belongs to the cell above (`[c, c+1)`); the random-ray test snaps a third of origins to integers to keep exercising that.
 
 - **No ECS.** World state is plain structs (`World`, `Renderer`, `Player`) owned by `main` and passed to procs. If mobs/items arrive, use a plain `[dynamic]Entity`.
 

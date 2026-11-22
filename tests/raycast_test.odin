@@ -61,6 +61,18 @@ raycast_floors_negative_coordinates :: proc(t: ^testing.T) {
 }
 
 @(test)
+raycast_origin_on_a_boundary_belongs_to_the_cell_above :: proc(t: ^testing.T) {
+	// z = 39.0 is in cell 39 ([39, 40)), even when heading -z out of it.
+	here := [1][3]i32{{0, 0, 39}}
+	hit, ok := cast_cells({0.5, 0.5, 39}, {0, 0, -1}, 5, here[:])
+	expect_hit(t, hit, ok, {0, 0, 39}, {0, 0, 0}, 0)
+	// With that cell empty, the ray enters cell 38 immediately, via its top (+z) face.
+	below := [1][3]i32{{0, 0, 38}}
+	hit, ok = cast_cells({0.5, 0.5, 39}, {0, 0, -1}, 5, below[:])
+	expect_hit(t, hit, ok, {0, 0, 38}, {0, 0, 1}, 0)
+}
+
+@(test)
 raycast_respects_max_dist :: proc(t: ^testing.T) {
 	wall := [1][3]i32{{5, 0, 0}}
 	hit, ok := cast_cells({0.5, 0.5, 0.5}, {1, 0, 0}, 4.5, wall[:])
@@ -150,16 +162,20 @@ reference_cast :: proc(origin, dir: [3]f64, max_dist: f64) -> (hit: geom.Ray_Hit
 					}
 					t_exit = min(t_exit, t1)
 				}
-				if t_enter > t_exit || t_exit <= 0 || t_enter > max_dist {
+				// The origin's own cell (half-open [c, c+1), so an origin exactly
+				// on a boundary belongs to the cell above it) is hit at 0 with no
+				// face, even if the ray leaves it immediately.
+				contains := linalg.floor(origin) == [3]f64{f64(c.x), f64(c.y), f64(c.z)}
+				if !contains && (t_enter > t_exit || t_exit <= 0 || t_enter > max_dist) {
 					continue
 				}
-				entry := max(t_enter, 0)
+				entry := 0 if contains else max(t_enter, 0)
 				if entry < best {
 					second_best = best
 					best = entry
 					hit = {block = c, dist = f32(entry)}
 					hit.normal = {}
-					if t_enter > 0 {
+					if !contains {
 						hit.normal[enter_axis] = -1 if dir[enter_axis] > 0 else 1
 					}
 				} else {
@@ -177,6 +193,11 @@ raycast_matches_reference_on_random_rays :: proc(t: ^testing.T) {
 	hits, misses, inside := 0, 0, 0
 	for _ in 0 ..< RAYS {
 		origin := [3]f32{rand.float32_range(-40, 40), rand.float32_range(-40, 40), rand.float32_range(-40, 40)}
+		if rand.int_max(3) == 0 {
+			// Exactly on a cell boundary on one axis: the half-open edge case.
+			axis := rand.int_max(3)
+			origin[axis] = f32(i32(origin[axis]))
+		}
 		dir := linalg.normalize([3]f32{rand.float32_range(-1, 1), rand.float32_range(-1, 1), rand.float32_range(-1, 1)})
 		max_dist := rand.float32_range(0.5, 8)
 

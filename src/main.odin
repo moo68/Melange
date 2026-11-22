@@ -75,6 +75,7 @@ main :: proc() {
 	// and see which chunks are being culled.
 	cull_frozen := false
 	frustum: geom.Frustum
+	edit := player.DEFAULT_EDIT_STATE
 
 	for frame := 0; !rl.WindowShouldClose(); frame += 1 {
 		if opts.frames > 0 && frame >= opts.frames {
@@ -93,6 +94,13 @@ main :: proc() {
 			frustum = render.camera_frustum(camera)
 		}
 
+		// Edit before meshing, so changes show this frame; re-pick so the
+		// outline moves to whatever is now targeted.
+		target, has_target := player.pick_block(&w, camera)
+		if player.update_block_edit(&edit, &w, camera, target, has_target) {
+			target, has_target = player.pick_block(&w, camera)
+		}
+
 		p := camera.position
 		center := world.block_to_chunk({i32(math.floor(p.x)), i32(math.floor(p.y)), i32(math.floor(p.z))})
 		if err := world.streamer_update(&s, &w, center); err != nil {
@@ -101,7 +109,6 @@ main :: proc() {
 		}
 		render.renderer_forget_chunks(&r, s.unloaded[:])
 		render.renderer_update(&r, &w, center)
-		target, has_target := player.pick_block(&w, camera)
 
 		rl.BeginDrawing()
 		rl.ClearBackground(render.SKY_COLOR)
@@ -120,7 +127,7 @@ main :: proc() {
 		rl.EndMode3D()
 
 		render.draw_crosshair()
-		render.draw_debug_overlay(&r, &w, &s, camera, target if has_target else nil, wireframe, cull_frozen)
+		render.draw_debug_overlay(&r, &w, &s, camera, target if has_target else nil, edit.selected, wireframe, cull_frozen)
 		{
 			// Swaps buffers: includes the vsync wait and any GPU sync.
 			prof.scope("EndDrawing")
