@@ -59,8 +59,10 @@ main :: proc() {
 	fog_end := world.stream_meshed_distance(s.config)
 	render.renderer_set_fog(&r, fog_end * 0.55, fog_end)
 
-	// Fly mode only until step 3b adds walking.
-	pl := player.player_looking_at({0, 50, 0}, {20, 40, 20})
+	// Walking on the surface at the origin, looking toward +X+Z and a bit down.
+	pl := player.player_spawn(w.seed, 0, 0, 45, -10)
+	// F3: debug mode = fly through blocks + the debug overlay.
+	debug := false
 	rl.DisableCursor()
 	ignore_mouse_frames := 2 // see player.update_look
 	wireframe := false
@@ -77,7 +79,11 @@ main :: proc() {
 		prof.scope("frame")
 		player.update_look(&pl, ignore_mouse_frames == 0)
 		ignore_mouse_frames = max(ignore_mouse_frames - 1, 0)
-		player.update_fly(&pl)
+		if rl.IsKeyPressed(.F3) {
+			debug = !debug
+			player.set_mode(&pl, &w, .Fly if debug else .Walk)
+		}
+		player.update_movement(&pl, &w)
 		camera := player.camera_of(&pl)
 		if rl.IsKeyPressed(.F1) {
 			wireframe = !wireframe
@@ -92,7 +98,7 @@ main :: proc() {
 		// Edit before meshing, so changes show this frame; re-pick so the
 		// outline moves to whatever is now targeted.
 		target, has_target := player.pick_block(&w, camera)
-		if player.update_block_edit(&edit, &w, camera, target, has_target) {
+		if player.update_block_edit(&edit, &w, target, has_target, player.player_box(&pl)) {
 			target, has_target = player.pick_block(&w, camera)
 		}
 
@@ -122,11 +128,12 @@ main :: proc() {
 		rl.EndMode3D()
 
 		render.draw_crosshair()
-		render.draw_debug_overlay(&r, &w, &s, camera, target if has_target else nil, edit.selected, wireframe, cull_frozen)
-		{
-			// Swaps buffers: includes the vsync wait and any GPU sync.
-			prof.scope("EndDrawing")
-			rl.EndDrawing()
+		if debug {
+			render.draw_debug_overlay(&r, &w, &s, camera, target if has_target else nil, edit.selected, wireframe, cull_frozen)
 		}
+		// Swaps buffers: includes the vsync wait and any GPU sync.
+		prof.begin("EndDrawing")
+		rl.EndDrawing()
+		prof.end()
 	}
 }

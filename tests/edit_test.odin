@@ -110,7 +110,7 @@ placing_goes_in_front_of_the_hit_face :: proc(t: ^testing.T) {
 	w: world.World
 	make_flat_world(&w)
 	defer world.world_destroy(&w)
-	far_away := [3]i32{1000, 1000, 1000} // eye not in the way
+	far_away := geom.body_box({1000, 1000, 1000}) // player not in the way
 
 	hit, ok := cast_down(&w, 20.5, 20.5)
 	testing.expect(t, world.world_place_block(&w, hit, world.DIRT, far_away))
@@ -128,15 +128,27 @@ placing_goes_in_front_of_the_hit_face :: proc(t: ^testing.T) {
 }
 
 @(test)
+placing_right_next_to_the_player_is_allowed :: proc(t: ^testing.T) {
+	w: world.World
+	make_flat_world(&w)
+	defer world.world_destroy(&w)
+	// Standing at x 21.2..21.8: the cell x 20..21 just beside is free to build in.
+	hit, _ := cast_down(&w, 20.5, 20.5)
+	testing.expect(t, world.world_place_block(&w, hit, world.STONE, geom.body_box({21.5, 32.001, 20.5})))
+}
+
+@(test)
 placing_is_refused_when_it_cannot_work :: proc(t: ^testing.T) {
 	w: world.World
 	make_flat_world(&w)
 	defer world.world_destroy(&w)
-	far_away := [3]i32{1000, 1000, 1000}
+	far_away := geom.body_box({1000, 1000, 1000})
 
 	hit, _ := cast_down(&w, 20.5, 20.5)
-	// Into the eye's own cell.
-	testing.expect(t, !world.world_place_block(&w, hit, world.STONE, {20, 32, 20}))
+	// Into the player's own body: standing on that spot, or overlapping it
+	// at head height.
+	testing.expect(t, !world.world_place_block(&w, hit, world.STONE, geom.body_box({20.5, 32.001, 20.5})))
+	testing.expect(t, !world.world_place_block(&w, hit, world.STONE, geom.body_box({21.2, 30.5, 20.5})))
 	// Ray started inside a block: no face.
 	testing.expect(t, !world.world_place_block(&w, {block = {20, 31, 20}}, world.STONE, far_away))
 	// The cell in front isn't air (stale hit after something was placed there).
@@ -179,7 +191,7 @@ corner_edit_updates_ao_in_the_diagonal_chunk :: proc(t: ^testing.T) {
 	// corner shared by chunks x, y, z in {1, 2}.
 	hit, ok := cast_down(&w, 32.5, 32.5)
 	expect_hit(t, hit, ok, {32, 31, 32}, {0, 1, 0}, 3)
-	testing.expect(t, world.world_place_block(&w, hit, world.STONE, {1000, 1000, 1000}))
+	testing.expect(t, world.world_place_block(&w, hit, world.STONE, geom.body_box({1000, 1000, 1000})))
 
 	dirty: [dynamic][3]i32
 	defer delete(dirty)
@@ -189,4 +201,15 @@ corner_edit_updates_ao_in_the_diagonal_chunk :: proc(t: ^testing.T) {
 
 	// The diagonal chunk's floor corner is now occluded by the corner block.
 	testing.expect_value(t, floor_top_corner_brightness(t, &w), shade_with_ao(.Pos_Y, 2))
+}
+
+@(test)
+unloaded_chunks_block_movement :: proc(t: ^testing.T) {
+	w: world.World
+	make_flat_world(&w)
+	defer world.world_destroy(&w)
+	testing.expect(t, world.world_blocks_movement(&w, {5, 31, 5}), "stone")
+	testing.expect(t, !world.world_blocks_movement(&w, {5, 40, 5}), "loaded air")
+	testing.expect(t, world.world_blocks_movement(&w, {-1, 40, 5}), "unloaded counts as solid")
+	testing.expect(t, !world.world_is_solid(&w, {-1, 40, 5}), "...but not for picking")
 }

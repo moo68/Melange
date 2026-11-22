@@ -3,7 +3,7 @@ package player
 import "melange:geom"
 import rl "third_party:raylib"
 
-// Free-fly movement (passes through blocks). Same feel as raylib's
+// Free-fly movement (passes through blocks; debug mode). Same feel as raylib's
 // CAMERA_FREE, which it replaced: same base speed and mouse sensitivity,
 // horizontal movement along the ground plane whatever the pitch, and each
 // key moving at full speed on its own axis (so diagonals are √2 faster).
@@ -24,7 +24,9 @@ update_fly :: proc(p: ^Player) {
 	axis :: proc(pos, neg: rl.KeyboardKey) -> f32 {
 		return f32(int(rl.IsKeyDown(pos))) - f32(int(rl.IsKeyDown(neg)))
 	}
-	p.position += forward * axis(.W, .S) * step
-	p.position += right * axis(.D, .A) * step
-	p.position.y += axis(.SPACE, .LEFT_CONTROL) * step
+	move := forward * axis(.W, .S) * step + right * axis(.D, .A) * step
+	move.y += axis(.SPACE, .LEFT_CONTROL) * step
+	p.body.position += {f64(move.x), f64(move.y), f64(move.z)}
+	p.prev_feet = p.body.position // no interpolation in fly mode
+	p.alpha = 0
 }

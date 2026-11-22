@@ -1,6 +1,5 @@
 package player
 
-import "core:math"
 import "melange:geom"
 import "melange:world"
 import rl "third_party:raylib"
@@ -26,9 +25,10 @@ DEFAULT_EDIT_STATE :: Edit_State {
 
 // Keys 1/2/3 select a block; left click breaks the targeted block, right
 // click places the selected one against the targeted face; both repeat
-// every EDIT_REPEAT while held. `hit`/`has_hit` = this frame's pick_block.
+// every EDIT_REPEAT while held. `hit`/`has_hit` = this frame's pick_block;
+// nothing is placed overlapping `keep_clear` (the player's box).
 // Returns true if the world changed (re-pick for the outline).
-update_block_edit :: proc(e: ^Edit_State, w: ^world.World, camera: rl.Camera3D, hit: geom.Ray_Hit, has_hit: bool) -> bool {
+update_block_edit :: proc(e: ^Edit_State, w: ^world.World, hit: geom.Ray_Hit, has_hit: bool, keep_clear: geom.AABB) -> bool {
 	for key, i in PLACEABLE_KEYS {
 		if rl.IsKeyPressed(key) {
 			e.selected = PLACEABLE[i]
@@ -45,9 +45,7 @@ update_block_edit :: proc(e: ^Edit_State, w: ^world.World, camera: rl.Camera3D, 
 		return world.world_break_block(w, hit) // one edit per frame: break wins
 	}
 	if places {
-		p := camera.position
-		eye := [3]i32{i32(math.floor(p.x)), i32(math.floor(p.y)), i32(math.floor(p.z))}
-		return world.world_place_block(w, hit, e.selected, eye)
+		return world.world_place_block(w, hit, e.selected, keep_clear)
 	}
 	return false
 }
