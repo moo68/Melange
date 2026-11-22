@@ -40,6 +40,28 @@ build/          build output (gitignored)
 
 Each `src/` subdirectory is its own Odin package. Import them through the `melange` collection, e.g. `import "melange:world"`. Keep dependencies one-directional: `main → player, render → mesh → world`; `geom` is a leaf any package may import. Tests don't link raylib, so code that needs tests must not live in a package that imports raylib. `world` must not import raylib rendering code (math types like `[3]f32` are fine).
 
+## Working style
+
+The user wants to build this **one step at a time**: for a new feature, explain the plan and tradeoffs (with a recommendation, and numbers when relevant) and wait for agreement before writing code; then implement only that step, with tests, and stop for review. Don't bundle roadmap items. Verify with tests (plus mutation checks for new tests), `./run.sh check`/`build`, a short run checking raylib's log, and offscreen renders (e.g. `./run.sh terrain-preview`) — don't capture the user's screen; ask them to check visuals. Update this file as decisions are made.
+
+## Status & roadmap (as of 2026-11-22)
+
+- **Done — phase 1:** chunk meshing with face culling (in-chunk and inter-chunk), fly camera.
+- **Done — phase 2:** regions + world storage, streaming, frustum culling, noise terrain (plains + mountains), per-column height cache, quick perf wins.
+- **Done — phase 3:** texture atlas (seamless, `texelFetch`), chunk shader, fog, ambient occlusion.
+- **Next — phase 4 (on hold until the user says go):**
+  1. Block picking: voxel DDA raycast (Amanatides–Woo) in `geom` → hit block + face; outline the targeted block.
+  2. Break (left click → AIR) / place (right click, against the hit face) via `world_set_block` (exercises the 26-neighbor dirty marking).
+  3. Walking physics in `player/`: AABB player, gravity, jump, per-axis swept collision; key to toggle back to fly mode.
+- **Later:** phase 5 worker threads for gen/meshing (not needed yet per measurements); phase 6 compact `rlgl` vertex format, light propagation, water/transparent pass, greedy/bitmask meshing.
+- **Planned, on hold (discussed, not built):**
+  - **Spall profiling:** a leaf `src/prof/` package wrapping `core:prof/spall` (`prof.init/shutdown/scope`, `@(thread_local)` buffer), compiled out unless `-define:PROFILE=true`; `./run.sh profile` = release build writing `build/trace.spall` for the Spall viewer (gravitymoth.com/spall). Instrument frame, streamer (+ per-chunk gen), renderer update (+ mesh/upload per chunk), draw, and `EndDrawing` separately (vsync wait). Manual scopes only — not Odin's auto-instrumentation.
+  - **Terrain tuning interface:** turn the `TERRAIN_*` constants into a params struct that `tools/terrainviz` can override from the command line, later maybe a live in-game panel.
+
+## Controls (debug build)
+
+Mouse look; WASD move (horizontal); Space / Left Ctrl up / down; Shift = 5× sprint; F1 wireframe; F2 freeze frustum culling; Esc quit. Mouse look ignores the first 2 frames after cursor capture (raylib reports a bogus jump). The overlay shows FPS, position, seed, chunk/draw/cull counts, streaming queues and per-chunk gen/mesh times.
+
 ## Engine design notes
 
 - **Coordinates:** Y is up. World block coords are `[3]i32`; chunk coords are block coords floor-divided by chunk size (careful with negatives — use floor division, not `/`).
