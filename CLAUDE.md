@@ -30,7 +30,7 @@ src/world/      chunks, block types/registry, world storage, terrain generation
 src/mesh/       chunk meshing (face culling, later greedy meshing), vertex data
 src/render/     camera, shaders, texture atlas, draw calls, debug overlay
 src/player/     input, movement, physics/collision against voxels, block picking
-src/geom/       pure math, no raylib (frustum, AABB; later ray/voxel DDA) — testable without linking raylib
+src/geom/       pure math, no raylib (frustum, AABB, voxel raycast) — testable without linking raylib
 src/prof/       Spall profiling scopes (leaf; compiled out unless -define:PROFILE=true)
 assets/shaders/ GLSL shaders (GLSL 330 — raylib's default desktop GL)
 assets/textures/ block texture atlas and other images
@@ -52,8 +52,9 @@ The user wants to build this **one step at a time**: for a new feature, explain 
 - **Done — phase 2:** regions + world storage, streaming, frustum culling, noise terrain (plains + mountains), per-column height cache, quick perf wins.
 - **Done — phase 3:** texture atlas (seamless, `texelFetch`), chunk shader, fog, ambient occlusion.
 - **Done — Spall profiling** (see "Profiling" below).
-- **Next — phase 4 (on hold until the user says go):**
-  1. Block picking: voxel DDA raycast (Amanatides–Woo) in `geom` → hit block + face; outline the targeted block.
+- **In progress — phase 4:**
+  1. ~~Block picking~~ done (see "Block picking" below).
+  1.5. ~~Crosshair~~ done: `render.draw_crosshair()` after `EndMode3D` (screen space, no UI library).
   2. Break (left click → AIR) / place (right click, against the hit face) via `world_set_block` (exercises the 26-neighbor dirty marking).
   3. Walking physics in `player/`: AABB player, gravity, jump, per-axis swept collision; key to toggle back to fly mode.
 - **Later:** phase 5 worker threads for gen/meshing (not needed yet per measurements); phase 6 compact `rlgl` vertex format, light propagation, water/transparent pass, greedy/bitmask meshing.
@@ -62,7 +63,7 @@ The user wants to build this **one step at a time**: for a new feature, explain 
 
 ## Controls (debug build)
 
-Mouse look; WASD move (horizontal); Space / Left Ctrl up / down; Shift = 5× sprint; F1 wireframe; F2 freeze frustum culling; Esc quit. `--frames N` quits after N frames. Mouse look ignores the first 2 frames after cursor capture (raylib reports a bogus jump). The overlay shows FPS, position, seed, chunk/draw/cull counts, streaming queues and per-chunk gen/mesh times.
+Mouse look; WASD move (horizontal); Space / Left Ctrl up / down; Shift = 5× sprint; F1 wireframe; F2 freeze frustum culling; Esc quit. `--frames N` quits after N frames. Mouse look ignores the first 2 frames after cursor capture (raylib reports a bogus jump). The overlay shows FPS, position, seed, chunk/draw/cull counts, streaming queues and per-chunk gen/mesh times, and the targeted block (coords, type, face). The targeted block (within 5 blocks) gets a black wire outline; a white crosshair with a 1-px dark border marks the screen center.
 
 ## Engine design notes
 
@@ -125,6 +126,10 @@ RAM follows writes, not the 4 MB reservation: region memory is anonymous `mmap`,
 - **Ambient occlusion** (0fps.net method): per face vertex, the two side blocks and the diagonal corner block on the face's open side give `ao = 0 if both sides solid else 3 - (s1 + s2 + corner)`; vertex brightness = `FACE_SHADE[face] * AO_BRIGHTNESS[ao]` ({0.45, 0.65, 0.82, 1.0}) in the vertex color. Each quad is split along the diagonal with the darker AO sum (flip when `ao0 + ao2 > ao1 + ao3`), else AO shows as diagonal streaks; both splits stay CCW (tested). Costs ~+25% per surface chunk (0.026 ms, ~103 ns/face).
 - **Rendering:** light propagation (sky/block light) would also go into the vertex color.
 - **Performance:** Avoid per-frame allocations in the hot path. Use explicit allocators; free chunk data and meshes on unload. Generation/meshing may move to worker threads later — keep those functions free of global mutable state.
+
+- **Block picking:** `geom.raycast_voxels(origin, dir, max_dist, data, is_solid)` (Amanatides–Woo voxel walk; `is_solid` is a parametric callback so `geom` stays independent of `world`) returns `Ray_Hit{block, normal, dist}`. `normal` = outward normal of the face entered, so `block + normal` is where a placed block goes; `{0,0,0}` when the ray starts inside a solid block (no placement then). Cells floor (negatives), zero-direction axes never step, exact edge/corner ties step x before y before z, `max_dist` must be finite. Tested against an exact slab-intersection reference on random rays. `player.pick_block(&w, camera)` casts from the eye along the view direction with `player.REACH :: 5.0`; unloaded chunks count as empty. ~0.5 µs/frame.
+  - Crosshair: `geom.crosshair_rects(w, h, arm, thickness)` (pure, tested) gives the two bars; `render.draw_crosshair()` (`render/hud.odin`) draws both dark borders (`pixel_rect_grow` by 1) and then both white bars with `DrawRectangle`, so neither border crosses the other bar. Arm 10 px, thickness 2 (even → symmetric on even screen sizes); recomputed each frame, so it follows window resizes. Not color-inverting (would need a custom blend mode) — revisit if it ever looks wrong.
+  - `render.draw_block_outline(block)`: `DrawCubeWires` at 1.002× (no z-fighting with the block's edges), drawn after the chunks inside `BeginMode3D` with depth test on (hidden edges stay hidden).
 
 - **No ECS.** World state is plain structs (`World`, `Renderer`, `Player`) owned by `main` and passed to procs. If mobs/items arrive, use a plain `[dynamic]Entity`.
 

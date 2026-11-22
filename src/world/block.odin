@@ -12,6 +12,18 @@ GRASS :: Block_ID(3)
 // blocks read as 0. AIR must be 0 for that to mean "empty".
 #assert(AIR == 0)
 
+@(rodata)
+BLOCK_NAMES := [?]string {
+	AIR   = "air",
+	STONE = "stone",
+	DIRT  = "dirt",
+	GRASS = "grass",
+}
+
+block_name :: proc "contextless" (id: Block_ID) -> string {
+	return BLOCK_NAMES[id] if int(id) < len(BLOCK_NAMES) else "unknown"
+}
+
 // Whether this block hides the faces of blocks next to it.
 // For now every non-air block is a full opaque cube.
 block_is_opaque :: #force_inline proc "contextless" (id: Block_ID) -> bool {

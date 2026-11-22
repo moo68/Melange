@@ -101,6 +101,7 @@ main :: proc() {
 		}
 		render.renderer_forget_chunks(&r, s.unloaded[:])
 		render.renderer_update(&r, &w, center)
+		target, has_target := player.pick_block(&w, camera)
 
 		rl.BeginDrawing()
 		rl.ClearBackground(render.SKY_COLOR)
@@ -113,9 +114,13 @@ main :: proc() {
 		if wireframe {
 			rlgl.DisableWireMode()
 		}
+		if has_target {
+			render.draw_block_outline(target.block)
+		}
 		rl.EndMode3D()
 
-		render.draw_debug_overlay(&r, &w, &s, camera, wireframe, cull_frozen)
+		render.draw_crosshair()
+		render.draw_debug_overlay(&r, &w, &s, camera, target if has_target else nil, wireframe, cull_frozen)
 		{
 			// Swaps buffers: includes the vsync wait and any GPU sync.
 			prof.scope("EndDrawing")
