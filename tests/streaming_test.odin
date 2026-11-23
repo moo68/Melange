@@ -134,7 +134,15 @@ unload_budget_is_respected :: proc(t: ^testing.T) {
 	world.streamer_update(&s, &w, {0, 0, 0})
 	world.streamer_update(&s, &w, {100, 0, 0})
 	testing.expect_value(t, len(s.unloaded), 5)
-	testing.expect_value(t, s.stats.pending_unloads, shape_count(cfg) - 5)
+	// The rest goes 5 per update, resuming inside a region where it stopped.
+	total := 5
+	for _ in 0 ..< 100 {
+		world.streamer_update(&s, &w, {100, 0, 0})
+		testing.expect(t, len(s.unloaded) <= 5)
+		total += len(s.unloaded)
+	}
+	testing.expect_value(t, total, shape_count(cfg))
+	expect_exactly_shape_loaded(t, &w, cfg, {100, 0, 0})
 }
 
 @(test)
@@ -320,4 +328,156 @@ loading_stays_nearest_first_while_moving :: proc(t: ^testing.T) {
 		}
 	}
 	testing.expectf(t, loads > 100, "exercised: %d loads", loads)
+}
+
+// Brute force: exactly the chunks that should be loaded around `center` are,
+// once both passes have finished: the whole load range, and nothing beyond
+// the keep range.
+expect_settled :: proc(t: ^testing.T, w: ^world.World, cfg: world.Stream_Config, center: [3]i32, loc := #caller_location) {
+	loaded: [dynamic][3]i32
+	defer delete(loaded)
+	world.world_collect_loaded(w, &loaded)
+	in_load := 0
+	for c in loaded {
+		testing.expectf(t, world.in_stream_range(cfg, center, c, cfg.unload_margin), "%v loaded beyond the keep range of %v", c, center, loc = loc)
+		in_load += int(world.in_stream_range(cfg, center, c))
+	}
+	testing.expect_value(t, in_load, shape_count(cfg), loc = loc)
+}
+
+@(test)
+region_scan_budget_limits_unload_work :: proc(t: ^testing.T) {
+	w: world.World
+	world.world_init(&w, 1)
+	defer world.world_destroy(&w)
+	cfg := SMALL
+	cfg.radius = 20 // spans several regions
+	cfg.vertical = 2
+	s: world.Streamer
+	world.streamer_init(&s, cfg)
+	defer world.streamer_destroy(&s)
+	world.streamer_update(&s, &w, {0, 0, 0})
+	regions := len(w.regions)
+
+	// A far jump: every old region needs its slots checked, 2 per update.
+	cfg.region_scan_budget = 2
+	cfg.load_budget = 0
+	world.streamer_set_config(&s, cfg)
+	world.streamer_update(&s, &w, {1000, 0, 0})
+	testing.expect_value(t, len(w.regions), regions - 2)
+	updates := 1
+	for len(w.regions) > 0 && updates < 1000 {
+		before := len(w.regions)
+		world.streamer_update(&s, &w, {1000, 0, 0})
+		testing.expect(t, before - len(w.regions) <= 2, "at most 2 regions per update")
+		updates += 1
+	}
+	testing.expect_value(t, len(w.regions), 0)
+	testing.expectf(t, updates >= regions / 2, "took %d updates for %d regions", updates, regions)
+}
+
+@(test)
+region_inside_keep_matches_brute_force :: proc(t: ^testing.T) {
+	cfg := world.Stream_Config{radius = 13, vertical = 3, unload_margin = 2}
+	// Every alignment of the center within a region on x and y (z mirrors x).
+	for align in 0 ..< int(world.REGION_SIZE * world.REGION_SIZE) {
+		center := [3]i32{i32(align) % world.REGION_SIZE, i32(align) / world.REGION_SIZE, -9}
+		for rx in i32(-4) ..= 4 {
+			for ry in i32(-2) ..= 2 {
+				for rz in i32(-4) ..= 4 {
+					key := [3]i32{rx, ry, rz}
+					all_inside := true
+					for i in 0 ..< world.REGION_VOLUME {
+						c := key * world.REGION_SIZE + world.region_local_from_index(i)
+						if !world.in_stream_range(cfg, center, c, cfg.unload_margin) {
+							all_inside = false
+							break
+						}
+					}
+					testing.expectf(t, world.region_inside_keep(cfg, center, key) == all_inside, "region %v around %v", key, center)
+				}
+			}
+		}
+	}
+}
+
+@(test)
+small_moves_skip_regions_inside_the_keep_range :: proc(t: ^testing.T) {
+	// After a 1-chunk move only regions on the edge of the keep range need
+	// their slots checked; the rest are skipped without using the budget.
+	w: world.World
+	world.world_init(&w, 1)
+	defer world.world_destroy(&w)
+	cfg := SMALL
+	cfg.radius = 28
+	cfg.vertical = 8
+	s: world.Streamer
+	world.streamer_init(&s, cfg)
+	defer world.streamer_destroy(&s)
+	world.streamer_update(&s, &w, {0, 0, 0})
+	regions := len(w.regions)
+
+	cfg.region_scan_budget = 1
+	world.streamer_set_config(&s, cfg)
+	world.streamer_update(&s, &w, {1, 0, 0})
+	updates := 1
+	for s.stats.unload_regions_left > 0 && updates < 1000 {
+		world.streamer_update(&s, &w, {1, 0, 0})
+		updates += 1
+	}
+	testing.expect_value(t, s.stats.unload_regions_left, 0)
+	testing.expectf(t, updates < regions * 3 / 4, "pass took %d updates for %d regions", updates, regions)
+}
+
+@(test)
+any_moves_settle_to_exactly_the_shape :: proc(t: ^testing.T) {
+	// Small budgets everywhere, so passes get interrupted, restarted by moves
+	// and resumed mid-region. Whatever the path, once it stops moving the
+	// world settles to exactly the right chunks.
+	w: world.World
+	world.world_init(&w, 1)
+	defer world.world_destroy(&w)
+	cfg := world.Stream_Config{radius = 6, vertical = 2, unload_margin = 1, load_budget = 9, unload_budget = 7, scan_budget = 50, region_scan_budget = 1}
+	s: world.Streamer
+	world.streamer_init(&s, cfg)
+	defer world.streamer_destroy(&s)
+
+	path := [?][3]i32{{0, 0, 0}, {1, 0, 0}, {2, 0, 0}, {2, 1, 0}, {-7, 1, 3}, {-7, 9, 3}, {-6, 9, 3}, {40, -3, -40}, {41, -3, -40}}
+	for center, i in path {
+		for _ in 0 ..< (3 if i % 2 == 0 else 1000) { 	// sometimes move on mid-pass
+			world.streamer_update(&s, &w, center)
+		}
+	}
+	last := path[len(path) - 1]
+	for _ in 0 ..< 1000 {
+		world.streamer_update(&s, &w, last)
+	}
+	expect_settled(t, &w, cfg, last)
+}
+
+@(test)
+set_config_resizes_the_loaded_area :: proc(t: ^testing.T) {
+	w: world.World
+	world.world_init(&w, 1)
+	defer world.world_destroy(&w)
+	cfg := SMALL
+	cfg.radius = 6
+	s: world.Streamer
+	world.streamer_init(&s, cfg)
+	defer world.streamer_destroy(&s)
+	center := [3]i32{3, 0, -4}
+	world.streamer_update(&s, &w, center)
+	expect_settled(t, &w, cfg, center)
+
+	for radius in ([?]i32{2, 9, 4}) { 	// shrink, grow, shrink
+		cfg.radius = radius
+		world.streamer_set_config(&s, cfg)
+		world.streamer_update(&s, &w, center) // same center: still restarts
+		expect_settled(t, &w, cfg, center)
+	}
+	// Vertical too.
+	cfg.vertical = 3
+	world.streamer_set_config(&s, cfg)
+	world.streamer_update(&s, &w, center)
+	expect_settled(t, &w, cfg, center)
 }

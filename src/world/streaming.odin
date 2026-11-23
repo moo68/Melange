@@ -22,6 +22,10 @@ Stream_Config :: struct {
 	// lookup, ~12 ns release): spreads the search for missing chunks after
 	// a move over several frames. 0 = no limit.
 	scan_budget:   int,
+	// Max regions whose slots are checked for unloading per update (up to
+	// 512 slots each; regions that are empty or entirely inside the keep
+	// range are skipped in O(1) and don't count). 0 = no limit.
+	region_scan_budget: int,
 }
 
 DEFAULT_STREAM_CONFIG :: Stream_Config {
@@ -31,18 +35,20 @@ DEFAULT_STREAM_CONFIG :: Stream_Config {
 	load_budget   = 32,
 	unload_budget = 64,
 	scan_budget   = 8192, // the 41,701-chunk shape in ~5 updates, ~0.1 ms each
+	region_scan_budget = 32,
 }
 
 Stream_Stats :: struct {
 	loaded:          int, // last update
 	unloaded:        int, // last update
 	load_scan_left:  int, // load-order positions not yet checked (an upper bound on pending loads)
-	pending_unloads: int,
+	unload_regions_left: int, // regions not yet checked in the current unload pass
 	gen_time:        time.Duration, // total generation time, last update
 	height_columns:  int, // chunk columns whose heights are cached
 }
 
 Streamer :: struct {
+	// Change only through streamer_set_config: load_order is derived from it.
 	config:       Stream_Config,
 	center:       [3]i32,
 	has_center:   bool,
@@ -52,10 +58,15 @@ Streamer :: struct {
 	// load_next to 0. No per-move scan or sort.
 	load_order:   [dynamic][3]i32,
 	load_next:    int,
-	// Rebuilt when the center changes chunk, then consumed a budget's worth
-	// per update via unload_next.
-	unload_queue: [dynamic][3]i32,
-	unload_next:  int,
+	// Unload pass: when the center changes chunk, the keys of all regions
+	// are snapshotted; each update then checks regions from unload_next
+	// (resuming inside a region at unload_slot after the unload budget ran
+	// out) and unloads their chunks beyond the keep range. Regions created
+	// after the snapshot only hold chunks loaded in range, so they can wait
+	// for the next pass.
+	unload_regions: [dynamic][3]i32,
+	unload_next:    int,
+	unload_slot:    int,
 	// Chunks unloaded by the last update. The caller must drop anything it
 	// keeps per chunk (e.g. GPU meshes) for these.
 	unloaded:     [dynamic][3]i32,
@@ -78,7 +89,7 @@ streamer_init :: proc(s: ^Streamer, config := DEFAULT_STREAM_CONFIG, allocator :
 	s.config = config
 	s.load_order = make([dynamic][3]i32, allocator)
 	build_load_order(&s.load_order, config)
-	s.unload_queue = make([dynamic][3]i32, allocator)
+	s.unload_regions = make([dynamic][3]i32, allocator)
 	s.unloaded = make([dynamic][3]i32, allocator)
 	s.heights = make(map[[2]i32]^Column_Heights, allocator)
 	s.evict = make([dynamic][2]i32, allocator)
@@ -87,12 +98,25 @@ streamer_init :: proc(s: ^Streamer, config := DEFAULT_STREAM_CONFIG, allocator :
 
 streamer_destroy :: proc(s: ^Streamer) {
 	delete(s.load_order)
-	delete(s.unload_queue)
+	delete(s.unload_regions)
 	delete(s.unloaded)
 	clear_heights(s)
 	delete(s.heights)
 	delete(s.evict)
 	s^ = {}
+}
+
+// Changes the streaming config (e.g. render distance) at runtime. The next
+// update restarts both passes around the current center: the new shape
+// loads nearest-first and chunks beyond the new keep range unload, within
+// the budgets. The caller updates anything else derived from the radius
+// (fog: stream_meshed_distance).
+streamer_set_config :: proc(s: ^Streamer, config: Stream_Config) {
+	if config.radius != s.config.radius || config.vertical != s.config.vertical {
+		build_load_order(&s.load_order, config)
+	}
+	s.config = config
+	s.has_center = false // forces a restart on the next update
 }
 
 @(private)
@@ -179,16 +203,7 @@ streamer_update :: proc(s: ^Streamer, w: ^World, center: [3]i32) -> (err: mem.Al
 	}
 
 	// Unload first, so memory is freed before more is allocated.
-	for s.unload_next < len(s.unload_queue) && len(s.unloaded) < s.config.unload_budget {
-		c := s.unload_queue[s.unload_next]
-		s.unload_next += 1
-		if world_get_chunk(w, c) == nil {
-			continue
-		}
-		prof.scope("unload chunk")
-		world_unload_chunk(w, c)
-		append(&s.unloaded, c)
-	}
+	unload_pass(s, w)
 
 	start := time.tick_now()
 	loaded, scanned := 0, 0
@@ -214,7 +229,7 @@ streamer_update :: proc(s: ^Streamer, w: ^World, center: [3]i32) -> (err: mem.Al
 	s.stats.loaded = loaded
 	s.stats.unloaded = len(s.unloaded)
 	s.stats.load_scan_left = len(s.load_order) - s.load_next
-	s.stats.pending_unloads = len(s.unload_queue) - s.unload_next
+	s.stats.unload_regions_left = len(s.unload_regions) - s.unload_next
 	s.stats.height_columns = len(s.heights)
 	return nil
 }
@@ -226,18 +241,13 @@ rebuild_queues :: proc(s: ^Streamer, w: ^World) {
 
 	s.load_next = 0 // restart the nearest-first walk around the new center
 
-	// Everything loaded but outside the (wider) keep range.
-	clear(&s.unload_queue)
-	s.unload_next = 0
-	world_collect_loaded(w, &s.unload_queue)
-	kept := 0
-	for c in s.unload_queue {
-		if !in_stream_range(cfg, s.center, c, cfg.unload_margin) {
-			s.unload_queue[kept] = c
-			kept += 1
-		}
+	// Restart the unload pass over a snapshot of the regions.
+	clear(&s.unload_regions)
+	for key in w.regions {
+		append(&s.unload_regions, key)
 	}
-	resize(&s.unload_queue, kept)
+	s.unload_next = 0
+	s.unload_slot = 0
 
 	// Drop cached heights for columns outside the keep range (horizontal).
 	clear(&s.evict)
@@ -251,5 +261,61 @@ rebuild_queues :: proc(s: ^Streamer, w: ^World) {
 	for key in s.evict {
 		free(s.heights[key], s.allocator)
 		delete_key(&s.heights, key)
+	}
+}
+
+// Whether every chunk of region `key` is within the keep range (load range
+// widened by unload_margin) around `center`: its farthest corner chunk is.
+region_inside_keep :: proc "contextless" (cfg: Stream_Config, center, key: [3]i32) -> bool {
+	lo := key * REGION_SIZE - center
+	hi := lo + (REGION_SIZE - 1)
+	far := [3]i32{max(abs(lo.x), abs(hi.x)), max(abs(lo.y), abs(hi.y)), max(abs(lo.z), abs(hi.z))}
+	r := cfg.radius + cfg.unload_margin
+	return far.x * far.x + far.z * far.z <= r * r && far.y <= cfg.vertical + cfg.unload_margin
+}
+
+// Continues the unload pass within unload_budget and region_scan_budget.
+@(private)
+unload_pass :: proc(s: ^Streamer, w: ^World) {
+	cfg := s.config
+	scanned := 0
+	for s.unload_next < len(s.unload_regions) && len(s.unloaded) < cfg.unload_budget {
+		key := s.unload_regions[s.unload_next]
+		r := w.regions[key]
+		if r == nil || region_inside_keep(cfg, s.center, key) {
+			s.unload_next += 1 // gone, or nothing in it to unload: O(1)
+			s.unload_slot = 0
+			continue
+		}
+		if cfg.region_scan_budget != 0 && scanned >= cfg.region_scan_budget {
+			break
+		}
+		scanned += 1
+		done := true
+		for i := s.unload_slot; i < REGION_VOLUME; i += 1 {
+			if !r.loaded[i] {
+				continue
+			}
+			c := key * REGION_SIZE + region_local_from_index(i)
+			if in_stream_range(cfg, s.center, c, cfg.unload_margin) {
+				continue
+			}
+			if len(s.unloaded) >= cfg.unload_budget {
+				s.unload_slot = i // resume here next update
+				done = false
+				break
+			}
+			last := r.loaded_count == 1
+			prof.scope("unload chunk")
+			world_unload_chunk(w, c) // frees the region with its last chunk
+			append(&s.unloaded, c)
+			if last {
+				break
+			}
+		}
+		if done {
+			s.unload_next += 1
+			s.unload_slot = 0
+		}
 	}
 }

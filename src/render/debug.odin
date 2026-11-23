@@ -29,12 +29,12 @@ draw_debug_overlay :: proc(r: ^Renderer, w: ^world.World, s: ^world.Streamer, ca
 	line(
 		buf[:],
 		120,
-		"stream: +%d (%.2f ms) -%d, to scan %d, to unload %d",
+		"stream: +%d (%.2f ms) -%d, to scan %d, regions to check %d",
 		s.stats.loaded,
 		ms(s.stats.gen_time),
 		s.stats.unloaded,
 		s.stats.load_scan_left,
-		s.stats.pending_unloads,
+		s.stats.unload_regions_left,
 	)
 	line(buf[:], 142, "per chunk: gen %.3f ms, mesh %.3f ms", per(s.stats.gen_time, s.stats.loaded), per(r.stats.mesh_time, r.stats.remeshed))
 	if hit, ok := target.?; ok {
