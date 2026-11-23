@@ -18,6 +18,10 @@ Stream_Config :: struct {
 	unload_margin: i32, // extra chunks beyond the load range before unloading
 	load_budget:   int, // max chunks generated per update
 	unload_budget: int, // max chunks unloaded per update
+	// Max load-order positions checked per update (each a world_get_chunk
+	// lookup, ~12 ns release): spreads the search for missing chunks after
+	// a move over several frames. 0 = no limit.
+	scan_budget:   int,
 }
 
 DEFAULT_STREAM_CONFIG :: Stream_Config {
@@ -26,12 +30,13 @@ DEFAULT_STREAM_CONFIG :: Stream_Config {
 	unload_margin = 2,
 	load_budget   = 32,
 	unload_budget = 64,
+	scan_budget   = 8192, // the 41,701-chunk shape in ~5 updates, ~0.1 ms each
 }
 
 Stream_Stats :: struct {
 	loaded:          int, // last update
 	unloaded:        int, // last update
-	pending_loads:   int,
+	load_scan_left:  int, // load-order positions not yet checked (an upper bound on pending loads)
 	pending_unloads: int,
 	gen_time:        time.Duration, // total generation time, last update
 	height_columns:  int, // chunk columns whose heights are cached
@@ -41,10 +46,14 @@ Streamer :: struct {
 	config:       Stream_Config,
 	center:       [3]i32,
 	has_center:   bool,
-	// Both queues are rebuilt only when the center changes chunk, then
-	// consumed a budget's worth per update via the *_next cursors.
-	load_queue:   [dynamic]Queued_Chunk, // sorted nearest first
+	// Every offset in the load shape, sorted nearest first (built once: the
+	// shape relative to the center never changes). Loading walks it from
+	// load_next, skipping chunks that exist; a center change resets
+	// load_next to 0. No per-move scan or sort.
+	load_order:   [dynamic][3]i32,
 	load_next:    int,
+	// Rebuilt when the center changes chunk, then consumed a budget's worth
+	// per update via unload_next.
 	unload_queue: [dynamic][3]i32,
 	unload_next:  int,
 	// Chunks unloaded by the last update. The caller must drop anything it
@@ -67,7 +76,8 @@ Queued_Chunk :: struct {
 
 streamer_init :: proc(s: ^Streamer, config := DEFAULT_STREAM_CONFIG, allocator := context.allocator) {
 	s.config = config
-	s.load_queue = make([dynamic]Queued_Chunk, allocator)
+	s.load_order = make([dynamic][3]i32, allocator)
+	build_load_order(&s.load_order, config)
 	s.unload_queue = make([dynamic][3]i32, allocator)
 	s.unloaded = make([dynamic][3]i32, allocator)
 	s.heights = make(map[[2]i32]^Column_Heights, allocator)
@@ -76,7 +86,7 @@ streamer_init :: proc(s: ^Streamer, config := DEFAULT_STREAM_CONFIG, allocator :
 }
 
 streamer_destroy :: proc(s: ^Streamer) {
-	delete(s.load_queue)
+	delete(s.load_order)
 	delete(s.unload_queue)
 	delete(s.unloaded)
 	clear_heights(s)
@@ -108,6 +118,34 @@ column_heights :: proc(s: ^Streamer, seed: i64, cx, cz: i32) -> (ch: ^Column_Hei
 	column_heights_compute(ch, seed, cx, cz)
 	s.heights[{cx, cz}] = ch
 	return ch, nil
+}
+
+// Every offset in the load shape of `cfg`, nearest first; ties in a fixed
+// order (y, then z, then x), so loading is deterministic.
+build_load_order :: proc(out: ^[dynamic][3]i32, cfg: Stream_Config) {
+	clear(out)
+	for dy in -cfg.vertical ..= cfg.vertical {
+		for dz in -cfg.radius ..= cfg.radius {
+			for dx in -cfg.radius ..= cfg.radius {
+				if dx * dx + dz * dz <= cfg.radius * cfg.radius {
+					append(out, [3]i32{dx, dy, dz})
+				}
+			}
+		}
+	}
+	slice.sort_by(out[:], proc(a, b: [3]i32) -> bool {
+		da, db := a.x * a.x + a.y * a.y + a.z * a.z, b.x * b.x + b.y * b.y + b.z * b.z
+		if da != db {
+			return da < db
+		}
+		if a.y != b.y {
+			return a.y < b.y
+		}
+		if a.z != b.z {
+			return a.z < b.z
+		}
+		return a.x < b.x
+	})
 }
 
 // Inside the load shape (circle × vertical span) around `center`, widened by `margin`.
@@ -153,28 +191,29 @@ streamer_update :: proc(s: ^Streamer, w: ^World, center: [3]i32) -> (err: mem.Al
 	}
 
 	start := time.tick_now()
-	loaded := 0
-	for s.load_next < len(s.load_queue) && loaded < s.config.load_budget {
-		q := s.load_queue[s.load_next]
+	loaded, scanned := 0, 0
+	for s.load_next < len(s.load_order) && loaded < s.config.load_budget && (s.config.scan_budget == 0 || scanned < s.config.scan_budget) {
+		coord := s.center + s.load_order[s.load_next]
 		s.load_next += 1
-		if world_get_chunk(w, q.coord) != nil {
+		scanned += 1
+		if world_get_chunk(w, coord) != nil {
 			continue
 		}
-		c := world_create_chunk(w, q.coord) or_return
-		if q.coord.y * CHUNK_SIZE > TERRAIN_MAX_HEIGHT {
+		c := world_create_chunk(w, coord) or_return
+		if coord.y * CHUNK_SIZE > TERRAIN_MAX_HEIGHT {
 			loaded += 1 // above any possible terrain: no heights needed
 			continue
 		}
-		ch := column_heights(s, w.seed, q.coord.x, q.coord.z) or_return
+		ch := column_heights(s, w.seed, coord.x, coord.z) or_return
 		prof.scope("gen chunk")
-		generate_chunk_from_heights(c, q.coord, ch)
+		generate_chunk_from_heights(c, coord, ch)
 		loaded += 1
 	}
 
 	s.stats.gen_time = time.tick_since(start)
 	s.stats.loaded = loaded
 	s.stats.unloaded = len(s.unloaded)
-	s.stats.pending_loads = len(s.load_queue) - s.load_next
+	s.stats.load_scan_left = len(s.load_order) - s.load_next
 	s.stats.pending_unloads = len(s.unload_queue) - s.unload_next
 	s.stats.height_columns = len(s.heights)
 	return nil
@@ -185,25 +224,7 @@ rebuild_queues :: proc(s: ^Streamer, w: ^World) {
 	prof.scope("rebuild queues")
 	cfg := s.config
 
-	clear(&s.load_queue)
-	s.load_next = 0
-	for dy in -cfg.vertical ..= cfg.vertical {
-		for dz in -cfg.radius ..= cfg.radius {
-			for dx in -cfg.radius ..= cfg.radius {
-				if dx * dx + dz * dz > cfg.radius * cfg.radius {
-					continue
-				}
-				c := s.center + {dx, dy, dz}
-				if world_get_chunk(w, c) != nil {
-					continue
-				}
-				append(&s.load_queue, Queued_Chunk{c, dx * dx + dy * dy + dz * dz})
-			}
-		}
-	}
-	slice.sort_by(s.load_queue[:], proc(a, b: Queued_Chunk) -> bool {
-		return a.dist2 < b.dist2
-	})
+	s.load_next = 0 // restart the nearest-first walk around the new center
 
 	// Everything loaded but outside the (wider) keep range.
 	clear(&s.unload_queue)

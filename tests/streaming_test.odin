@@ -50,7 +50,7 @@ initial_update_loads_the_shape :: proc(t: ^testing.T) {
 	center := [3]i32{-5, 0, 9}
 	testing.expect_value(t, world.streamer_update(&s, &w, center), nil)
 	expect_exactly_shape_loaded(t, &w, SMALL, center)
-	testing.expect_value(t, s.stats.pending_loads, 0)
+	testing.expect_value(t, s.stats.load_scan_left, 0)
 }
 
 @(test)
@@ -205,4 +205,119 @@ height_cache_fills_and_evicts :: proc(t: ^testing.T) {
 	for key in s.heights {
 		testing.expect(t, key.x >= 100 - SMALL.radius, "stale height column kept after moving away")
 	}
+}
+
+@(test)
+load_order_covers_the_shape_nearest_first :: proc(t: ^testing.T) {
+	cfg := world.DEFAULT_STREAM_CONFIG
+	order: [dynamic][3]i32
+	defer delete(order)
+	world.build_load_order(&order, cfg)
+	testing.expect_value(t, len(order), shape_count(cfg))
+	seen := make(map[[3]i32]bool)
+	defer delete(seen)
+	prev := i32(-1)
+	for o in order {
+		testing.expect(t, world.in_stream_range(cfg, {0, 0, 0}, o), "offset inside the shape")
+		testing.expect(t, !seen[o], "no duplicates")
+		seen[o] = true
+		d := o.x * o.x + o.y * o.y + o.z * o.z
+		testing.expect(t, d >= prev, "nearest first")
+		prev = d
+	}
+	testing.expect_value(t, order[0], [3]i32{0, 0, 0})
+}
+
+@(test)
+scan_budget_limits_lookups_per_update :: proc(t: ^testing.T) {
+	w: world.World
+	world.world_init(&w, 1)
+	defer world.world_destroy(&w)
+	cfg := SMALL
+	cfg.scan_budget = 10
+	s: world.Streamer
+	world.streamer_init(&s, cfg)
+	defer world.streamer_destroy(&s)
+
+	// Empty world: every position checked is missing, so 10 load per update.
+	world.streamer_update(&s, &w, {0, 0, 0})
+	testing.expect_value(t, s.stats.loaded, 10)
+	testing.expect_value(t, s.stats.load_scan_left, shape_count(cfg) - 10)
+	for _ in 0 ..< 100 {
+		world.streamer_update(&s, &w, {0, 0, 0})
+	}
+	expect_exactly_shape_loaded(t, &w, cfg, {0, 0, 0})
+
+	// After a 1-chunk move, the new slice is at the far end of the order:
+	// skipping the loaded chunks also counts against the budget, so the
+	// first updates find nothing (the old code scanned it all at once).
+	world.streamer_update(&s, &w, {1, 0, 0})
+	testing.expect_value(t, s.stats.loaded, 0)
+	testing.expect_value(t, s.stats.load_scan_left, shape_count(cfg) - 10)
+	for _ in 0 ..< 100 {
+		world.streamer_update(&s, &w, {1, 0, 0})
+	}
+	testing.expect_value(t, s.stats.load_scan_left, 0)
+}
+
+@(test)
+loading_stays_nearest_first_while_moving :: proc(t: ^testing.T) {
+	// One chunk per update while the center wanders: every chunk loaded is
+	// one of the nearest missing chunks in range of the current center
+	// (checked by brute force), and nothing loads outside the range.
+	w: world.World
+	world.world_init(&w, 1)
+	defer world.world_destroy(&w)
+	cfg := SMALL
+	cfg.load_budget = 1
+	s: world.Streamer
+	world.streamer_init(&s, cfg)
+	defer world.streamer_destroy(&s)
+
+	before := make(map[[3]i32]bool)
+	defer delete(before)
+	loaded: [dynamic][3]i32
+	defer delete(loaded)
+	path := [?][3]i32{{0, 0, 0}, {1, 0, 0}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}, {-3, 1, 1}, {-3, 0, 1}, {9, 0, 1}}
+	loads := 0
+	for center in path {
+		for _ in 0 ..< 40 {
+			clear(&before)
+			clear(&loaded)
+			world.world_collect_loaded(&w, &loaded)
+			for c in loaded {
+				before[c] = true
+			}
+			// Nearest missing distance around this center, by brute force.
+			best := max(i32)
+			r, v := cfg.radius, cfg.vertical
+			for dy in -v ..= v {
+				for dz in -r ..= r {
+					for dx in -r ..= r {
+						c := center + {dx, dy, dz}
+						if world.in_stream_range(cfg, center, c) && !before[c] {
+							best = min(best, dx * dx + dy * dy + dz * dz)
+						}
+					}
+				}
+			}
+
+			world.streamer_update(&s, &w, center)
+			if s.stats.loaded == 0 {
+				testing.expect_value(t, best, max(i32)) // nothing missing
+				continue
+			}
+			loads += 1
+			clear(&loaded)
+			world.world_collect_loaded(&w, &loaded)
+			for c in loaded {
+				if !before[c] {
+					d := c - center
+					testing.expect(t, world.in_stream_range(cfg, center, c), "loaded inside the range")
+					testing.expectf(t, d.x * d.x + d.y * d.y + d.z * d.z == best, "loaded %v at dist² %d, nearest missing %d", c, d.x * d.x + d.y * d.y + d.z * d.z, best)
+				}
+			}
+		}
+	}
+	testing.expectf(t, loads > 100, "exercised: %d loads", loads)
 }
