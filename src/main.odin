@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:mem"
 import "melange:prof"
 import "melange:render"
+import "melange:save"
 import rl "third_party:raylib"
 
 // Written by `./run.sh profile` builds (-define:PROFILE=true); open it in Spall.
@@ -11,6 +12,7 @@ TRACE_PATH :: "build/trace.spall"
 
 Screen :: enum {
 	Title,
+	World_Select,
 	Playing,
 	Paused,
 }
@@ -58,19 +60,18 @@ main :: proc() {
 	}
 	defer render.renderer_destroy(&r)
 
-	// --world/--seed/--frames go straight into the game; otherwise the
-	// title screen's Play opens that same world (the world list comes later).
+	// --world/--seed/--frames go straight into that world; otherwise start
+	// on the title screen.
 	game: Game
 	screen := Screen.Title
 	if opts.direct {
-		if !game_open(&game, opts, &r) {
+		if game_open(&game, request_from_opts(opts), &r) != "" {
 			return
 		}
 		screen = .Playing
 	}
-	title_message: cstring // why Play failed, shown on the title screen
-	play_label := describe_play(opts)
-	defer delete(play_label)
+	ws: World_Select // while on the world select screen
+	defer world_select_close(&ws)
 
 	main_loop: for frame := 0; !rl.WindowShouldClose(); frame += 1 {
 		if opts.frames > 0 && frame >= opts.frames {
@@ -94,10 +95,13 @@ main :: proc() {
 
 		rl.BeginDrawing()
 		title_action := Title_Action.None
+		select_action := World_Select_Action.None
 		pause_action := Pause_Action.None
 		switch screen {
 		case .Title:
-			title_action = draw_title(play_label, title_message)
+			title_action = draw_title()
+		case .World_Select:
+			select_action = draw_world_select(&ws, unix_now())
 		case .Playing, .Paused:
 			rl.ClearBackground(render.SKY_COLOR)
 			game_draw(&game, &r, screen == .Playing)
@@ -113,14 +117,32 @@ main :: proc() {
 		switch title_action {
 		case .None:
 		case .Play:
-			if game_open(&game, opts, &r) {
-				screen = .Playing
-				title_message = nil
-			} else {
-				title_message = "Couldn't open the world (see the terminal for why)"
-			}
+			world_select_open(&ws)
+			screen = .World_Select
 		case .Quit:
 			break main_loop
+		}
+		switch select_action {
+		case .None:
+		case .Play:
+			name, _ := world_select_playable(&ws)
+			if failure := game_open(&game, {name = name}, &r); failure == "" {
+				world_select_close(&ws)
+				screen = .Playing
+			} else {
+				world_select_set_message(&ws, failure)
+			}
+		case .Delete:
+			name := ws.entries[ws.selected].name
+			if err := save.delete_world(save.SAVES_DIR, name); err != .None {
+				world_select_set_message(&ws, fmt.tprintf("couldn't delete '%s': %v", name, err))
+			} else {
+				fmt.printfln("deleted world '%s'", name)
+				world_select_open(&ws) // rescan
+			}
+		case .Back:
+			world_select_close(&ws)
+			screen = .Title
 		}
 		switch pause_action {
 		case .None:
@@ -136,14 +158,6 @@ main :: proc() {
 	if screen != .Title {
 		game_close(&game, &r)
 	}
-}
-
-// What the title screen's Play button opens.
-describe_play :: proc(opts: Options) -> cstring {
-	if opts.world != "" {
-		return fmt.caprintf("world '%s' (saves/%s)", opts.world, opts.world)
-	}
-	return fmt.caprintf("unsaved world, seed %d (pass --world NAME to save)", opts.seed)
 }
 
 @(private = "file")

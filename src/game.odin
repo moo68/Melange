@@ -35,12 +35,13 @@ Game :: struct {
 	has_target:          bool,
 }
 
-// Opens the world given by `opts` (see session_open). Prints why on failure.
-game_open :: proc(g: ^Game, opts: Options, r: ^render.Renderer) -> bool {
+// Opens the world `req` (see session_open). On failure returns why (also
+// printed; temp-allocated).
+game_open :: proc(g: ^Game, req: World_Request, r: ^render.Renderer) -> (failure: string) {
 	g^ = {}
-	sess, ok := session_open(opts, &g.w, &g.pl, &g.debug)
-	if !ok {
-		return false
+	sess, failed := session_open(req, &g.w, &g.pl, &g.debug)
+	if failed != "" {
+		return failed
 	}
 	g.sess = sess
 	// Loads/unloads chunks around the camera each frame.
@@ -53,7 +54,7 @@ game_open :: proc(g: ^Game, opts: Options, r: ^render.Renderer) -> bool {
 	g.camera = player.camera_of(&g.pl)
 	g.frustum = render.camera_frustum(g.camera)
 	game_capture_mouse(g)
-	return true
+	return ""
 }
 
 // Saves and frees the world, and drops its meshes from the renderer.

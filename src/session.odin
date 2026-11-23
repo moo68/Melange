@@ -18,20 +18,38 @@ Session :: struct {
 	autosave_timer: f64,
 }
 
-// Initializes `w` and `pl` from --world (opening or creating the save) or,
-// without it, as an unsaved world with --seed. Prints why on failure (and
-// leaves `w` uninitialized). `debug` is set if the player was flying.
-session_open :: proc(opts: Options, w: ^world.World, pl: ^player.Player, debug: ^bool) -> (sess: Session, ok: bool) {
-	if opts.world == "" {
-		world.world_init(w, opts.seed)
+// Which world to open: a save (opened, or created if missing) or, with no
+// name, an unsaved world.
+World_Request :: struct {
+	name:     string, // saves/<name>; "" = unsaved world with `seed`
+	seed:     i64, // for an unsaved or new world (if seed_set); an existing one must match
+	seed_set: bool, // false: a new world gets a random seed
+}
+
+// The world asked for on the command line.
+request_from_opts :: proc(opts: Options) -> World_Request {
+	return {name = opts.world, seed = opts.seed, seed_set = opts.seed_set}
+}
+
+// Initializes `w` and `pl` for `req`. On failure returns why (also printed;
+// temp-allocated) and leaves `w` uninitialized. `debug` is set if the player
+// was flying.
+session_open :: proc(req: World_Request, w: ^world.World, pl: ^player.Player, debug: ^bool) -> (sess: Session, failure: string) {
+	if req.name == "" {
+		world.world_init(w, req.seed)
 		pl^ = player.player_spawn(w.seed, 0, 0, 45, -10)
-		return {}, true
+		return {}, ""
 	}
 	sess.saving = true
-	name := opts.world
+	name := req.name
+	fail :: proc(format: string, args: ..any) -> string {
+		msg := fmt.tprintf(format, ..args)
+		fmt.eprintln(msg)
+		return msg
+	}
 
 	if !save.world_exists(save.SAVES_DIR, name) {
-		seed := opts.seed if opts.seed_set else i64(rand.uint64())
+		seed := req.seed if req.seed_set else i64(rand.uint64())
 		sess.info = save.new_world_info(name, seed, unix_now())
 		world.world_init(w, seed)
 		// Walking on the surface at the origin, looking toward +X+Z and a bit down.
@@ -39,28 +57,26 @@ session_open :: proc(opts: Options, w: ^world.World, pl: ^player.Player, debug: 
 		if !session_save(&sess, w, pl) {
 			session_close(&sess)
 			world.world_destroy(w)
-			return {}, false
+			return {}, fmt.tprintf("couldn't create world '%s' (see the terminal)", name)
 		}
 		fmt.printfln("created world '%s' (seed %d) in %s/%s", name, seed, save.SAVES_DIR, name)
-		return sess, true
+		return sess, ""
 	}
 
 	err: save.Error
 	if sess.info, err = save.load_info(save.SAVES_DIR, name); err != .None {
-		fmt.eprintfln("can't load world '%s': %v (in %s/%s/%s)", name, err, save.SAVES_DIR, name, save.INFO_FILE)
-		return {}, false
+		return {}, fail("can't load world '%s': %v (in %s/%s/%s)", name, err, save.SAVES_DIR, name, save.INFO_FILE)
 	}
-	if opts.seed_set && opts.seed != sess.info.seed {
-		fmt.eprintfln("world '%s' already exists with seed %d; drop --seed or pick another name", name, sess.info.seed)
+	if req.seed_set && req.seed != sess.info.seed {
+		msg := fail("world '%s' already exists with seed %d; drop --seed or pick another name", name, sess.info.seed)
 		session_close(&sess)
-		return {}, false
+		return {}, msg
 	}
 	world.world_init(w, sess.info.seed)
 	if edits_err, decode := save.load_edits(save.SAVES_DIR, name, w); edits_err != .None {
-		fmt.eprintfln("can't load world '%s': %v %v (in %s/%s/%s)", name, edits_err, decode, save.SAVES_DIR, name, save.EDITS_FILE)
 		session_close(&sess)
 		world.world_destroy(w)
-		return {}, false
+		return {}, fail("can't load world '%s': %v %v (in %s/%s/%s)", name, edits_err, decode, save.SAVES_DIR, name, save.EDITS_FILE)
 	}
 	ps := sess.info.player
 	pl^ = player.player_at(ps.feet, ps.yaw, ps.pitch)
@@ -69,7 +85,7 @@ session_open :: proc(opts: Options, w: ^world.World, pl: ^player.Player, debug: 
 		player.set_mode(pl, w, .Fly)
 	}
 	fmt.printfln("loaded world '%s' (seed %d, %d edits)", name, w.seed, w.edit_count)
-	return sess, true
+	return sess, ""
 }
 
 // Saves the world and player (no-op without --world). Prints why on failure.
@@ -106,7 +122,7 @@ session_close :: proc(sess: ^Session) {
 	save.info_destroy(&sess.info)
 }
 
-@(private = "file")
+// Now, in unix seconds.
 unix_now :: proc() -> i64 {
 	return time.time_to_unix(time.now())
 }

@@ -8,8 +8,11 @@ package save
 // files are ignored. No raylib: main converts its Player to Player_State.
 
 import "core:encoding/json"
+import "core:fmt"
 import "core:os"
+import "core:slice"
 import "core:strings"
+import "core:time"
 import "melange:world"
 
 SAVES_DIR :: "saves" // relative to the project root (gitignored)
@@ -187,4 +190,104 @@ write_atomic :: proc(path: string, data: []byte) -> Error {
 		return .Write_Failed
 	}
 	return .None
+}
+
+// ---- World list --------------------------------------------------------------
+
+// One world in the saves folder, for the world select screen.
+World_Entry :: struct {
+	name: string, // the folder name (owned)
+	info: World_Info, // valid when err == .None (owned)
+	err:  Error, // why world.json can't be loaded (the world can't be played)
+}
+
+// The worlds in `root`: every folder with a valid name and a world.json
+// (other folders and files are ignored; symlinks aren't followed). Playable
+// worlds come first, most recently played first, ties by name; then broken
+// ones by name. A missing `root` is an empty list. Free with
+// world_entries_destroy.
+list_worlds :: proc(root: string, allocator := context.allocator) -> []World_Entry {
+	context.allocator = allocator
+	infos, err := os.read_all_directory_by_path(root, context.temp_allocator)
+	if err != nil {
+		return nil
+	}
+	entries := make([dynamic]World_Entry, 0, len(infos))
+	for fi in infos {
+		if fi.type != .Directory || !valid_name(fi.name) || !os.exists(file_path(root, fi.name, INFO_FILE)) {
+			continue
+		}
+		info, load_err := load_info(root, fi.name)
+		append(&entries, World_Entry{name = strings.clone(fi.name), info = info, err = load_err})
+	}
+	slice.sort_by(entries[:], world_entry_less)
+	return entries[:]
+}
+
+// Sort order of list_worlds.
+world_entry_less :: proc(a, b: World_Entry) -> bool {
+	a_ok, b_ok := a.err == .None, b.err == .None
+	if a_ok != b_ok {
+		return a_ok
+	}
+	if a_ok && a.info.last_played != b.info.last_played {
+		return a.info.last_played > b.info.last_played
+	}
+	return a.name < b.name
+}
+
+world_entries_destroy :: proc(entries: []World_Entry, allocator := context.allocator) {
+	context.allocator = allocator
+	for &e in entries {
+		delete(e.name)
+		info_destroy(&e.info)
+	}
+	delete(entries)
+}
+
+// Permanently deletes the world folder <root>/<name> and everything in it.
+// Refuses invalid names (so never anything outside <root>) and anything
+// that isn't a real folder (e.g. a symlink).
+delete_world :: proc(root, name: string) -> Error {
+	if !valid_name(name) {
+		return .Bad_Name
+	}
+	dir := world_dir(root, name, context.temp_allocator)
+	fi, err := os.lstat(dir, context.temp_allocator)
+	if err != nil || fi.type != .Directory {
+		return .Not_Found
+	}
+	if os.remove_all(dir) != nil {
+		return .Write_Failed
+	}
+	return .None
+}
+
+// "just now", "5 minutes ago", "yesterday", "3 days ago", or the date
+// ("on 2026-10-01", UTC) after 30 days. Times are unix seconds; a `then`
+// in the future (clock changes) is "just now". Written into `buf`.
+format_last_played :: proc(buf: []u8, now, then: i64) -> string {
+	MINUTE :: 60
+	HOUR :: 60 * MINUTE
+	DAY :: 24 * HOUR
+	d := now - then
+	switch {
+	case d < MINUTE:
+		return fmt.bprint(buf, "just now")
+	case d < HOUR:
+		return plural_ago(buf, d / MINUTE, "minute")
+	case d < DAY:
+		return plural_ago(buf, d / HOUR, "hour")
+	case d < 2 * DAY:
+		return fmt.bprint(buf, "yesterday")
+	case d < 30 * DAY:
+		return plural_ago(buf, d / DAY, "day")
+	}
+	y, m, day := time.date(time.unix(then, 0))
+	return fmt.bprintf(buf, "on %04d-%02d-%02d", y, int(m), day)
+}
+
+@(private = "file")
+plural_ago :: proc(buf: []u8, n: i64, unit: string) -> string {
+	return fmt.bprintf(buf, "%d %s%s ago", n, unit, "" if n == 1 else "s")
 }
