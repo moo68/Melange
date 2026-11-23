@@ -8,6 +8,10 @@ import "core:mem"
 World :: struct {
 	regions:   map[[3]i32]^Region,
 	seed:      i64, // terrain generation seed
+	// Runtime block changes by chunk coord (edit_log.odin); re-applied when
+	// a chunk is regenerated.
+	edits:      map[[3]i32][dynamic]Block_Edit,
+	edit_count: int, // blocks with a logged edit
 	allocator: mem.Allocator,
 }
 
@@ -15,6 +19,7 @@ world_init :: proc(w: ^World, seed: i64 = 0, allocator := context.allocator) {
 	w.seed = seed
 	w.allocator = allocator
 	w.regions = make(map[[3]i32]^Region, allocator)
+	w.edits = make(map[[3]i32][dynamic]Block_Edit, allocator)
 }
 
 world_destroy :: proc(w: ^World) {
@@ -22,6 +27,7 @@ world_destroy :: proc(w: ^World) {
 		region_destroy(r, w.allocator)
 	}
 	delete(w.regions)
+	edit_log_destroy(w)
 	w^ = {}
 }
 
@@ -255,6 +261,7 @@ world_set_block :: proc(w: ^World, b: [3]i32, id: Block_ID) -> bool {
 	}
 	chunk_set(c, l.x, l.y, l.z, id)
 	r.dirty[i] = true
+	edit_log_record(w, coord, chunk_index(l.x, l.y, l.z), id) // survives unloading
 
 	// Per axis: 0 always, plus -1/+1 if the block is on that border.
 	lo, hi: [3]i32

@@ -215,14 +215,14 @@ streamer_update :: proc(s: ^Streamer, w: ^World, center: [3]i32) -> (err: mem.Al
 			continue
 		}
 		c := world_create_chunk(w, coord) or_return
-		if coord.y * CHUNK_SIZE > TERRAIN_MAX_HEIGHT {
-			loaded += 1 // above any possible terrain: no heights needed
-			continue
-		}
-		ch := column_heights(s, w.seed, coord.x, coord.z) or_return
-		prof.scope("gen chunk")
-		generate_chunk_from_heights(c, coord, ch)
 		loaded += 1
+		// Above any possible terrain: no generation, but it may hold edits.
+		if coord.y * CHUNK_SIZE <= TERRAIN_MAX_HEIGHT {
+			ch := column_heights(s, w.seed, coord.x, coord.z) or_return
+			prof.scope("gen chunk")
+			generate_chunk_from_heights(c, coord, ch)
+		}
+		world_apply_edits(w, coord, c)
 	}
 
 	s.stats.gen_time = time.tick_since(start)
