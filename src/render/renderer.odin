@@ -105,6 +105,18 @@ renderer_set_fog :: proc(r: ^Renderer, start, end: f32) {
 	rl.SetShaderValue(r.shader, r.loc_fog_end, &end, .FLOAT)
 }
 
+// Drops every chunk mesh and pending remesh (closing a world); the shader,
+// atlas, fog and scratch buffers stay for the next world.
+renderer_clear_chunks :: proc(r: ^Renderer) {
+	for _, m in r.meshes {
+		rl.UnloadMesh(m)
+	}
+	clear(&r.meshes)
+	clear(&r.dirty)
+	clear(&r.order)
+	r.stats = {}
+}
+
 renderer_destroy :: proc(r: ^Renderer) {
 	for _, m in r.meshes {
 		rl.UnloadMesh(m)

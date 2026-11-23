@@ -12,6 +12,7 @@ Options :: struct {
 	seed_set: bool, // --seed given (a new world uses it; an existing one must match)
 	world:    string, // --world NAME: open or create saves/NAME ("" = unsaved world)
 	frames:   int, // quit after this many frames (0 = run until closed); for repeatable profiling runs
+	direct:   bool, // any of --world/--seed/--frames: skip the title screen, straight into the game
 }
 
 // Parses command-line options. Returns ok = false (after printing why) on bad input.
@@ -61,5 +62,6 @@ parse_args :: proc() -> (opts: Options, ok: bool) {
 			return opts, false
 		}
 	}
+	opts.direct = opts.world != "" || opts.seed_set || opts.frames > 0
 	return opts, true
 }

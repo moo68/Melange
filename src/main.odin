@@ -1,36 +1,34 @@
 package main
 
 import "core:fmt"
-import "core:math"
-import "melange:geom"
-import "melange:player"
+import "core:mem"
 import "melange:prof"
 import "melange:render"
-import "melange:world"
 import rl "third_party:raylib"
-import "third_party:raylib/rlgl"
 
 // Written by `./run.sh profile` builds (-define:PROFILE=true); open it in Spall.
 TRACE_PATH :: "build/trace.spall"
 
+Screen :: enum {
+	Title,
+	Playing,
+	Paused,
+}
+
 main :: proc() {
+	// Debug builds report leaked allocations at exit (raylib's and the
+	// regions' mmap memory aren't tracked).
+	when ODIN_DEBUG {
+		track: mem.Tracking_Allocator
+		mem.tracking_allocator_init(&track, context.allocator)
+		context.allocator = mem.tracking_allocator(&track)
+		defer report_leaks(&track)
+	}
+
 	opts, ok := parse_args()
 	if !ok {
 		return
 	}
-
-	// The world and player: from saves/<--world> (or a new save there), or
-	// an unsaved world without --world.
-	w: world.World
-	pl: player.Player
-	// F3: debug mode = fly through blocks + the debug overlay.
-	debug := false
-	sess, opened := session_open(opts, &w, &pl, &debug)
-	if !opened {
-		return
-	}
-	defer world.world_destroy(&w)
-	defer session_close(&sess)
 
 	if !prof.init(TRACE_PATH) {
 		fmt.eprintln("failed to create", TRACE_PATH)
@@ -45,6 +43,8 @@ main :: proc() {
 	rl.SetConfigFlags({.WINDOW_RESIZABLE, .VSYNC_HINT, .MSAA_4X_HINT})
 	rl.InitWindow(1280, 720, "Melange")
 	defer rl.CloseWindow()
+	rl.SetExitKey(.KEY_NULL) // Esc pauses; only closing the window quits
+	ui_init()
 
 	r: render.Renderer
 	switch render.renderer_init(&r) {
@@ -58,91 +58,107 @@ main :: proc() {
 	}
 	defer render.renderer_destroy(&r)
 
-	// Loads/unloads chunks around the camera each frame.
-	s: world.Streamer
-	world.streamer_init(&s)
-	defer world.streamer_destroy(&s)
+	// --world/--seed/--frames go straight into the game; otherwise the
+	// title screen's Play opens that same world (the world list comes later).
+	game: Game
+	screen := Screen.Title
+	if opts.direct {
+		if !game_open(&game, opts, &r) {
+			return
+		}
+		screen = .Playing
+	}
+	title_message: cstring // why Play failed, shown on the title screen
+	play_label := describe_play(opts)
+	defer delete(play_label)
 
-	// Fully fogged just before chunks can be missing, so the world's edge
-	// and chunks popping in are never visible.
-	fog_end := world.stream_meshed_distance(s.config)
-	render.renderer_set_fog(&r, fog_end * 0.55, fog_end)
-
-	rl.DisableCursor()
-	ignore_mouse_frames := player.CAPTURE_IGNORE_FRAMES
-	wireframe := false
-	// F2 freezes the culling frustum at the current camera so you can fly out
-	// and see which chunks are being culled.
-	cull_frozen := false
-	frustum: geom.Frustum
-	edit := player.DEFAULT_EDIT_STATE
-
-	for frame := 0; !rl.WindowShouldClose(); frame += 1 {
+	main_loop: for frame := 0; !rl.WindowShouldClose(); frame += 1 {
 		if opts.frames > 0 && frame >= opts.frames {
 			break
 		}
 		prof.scope("frame")
-		player.update_look(&pl, ignore_mouse_frames == 0)
-		ignore_mouse_frames = max(ignore_mouse_frames - 1, 0)
-		if rl.IsKeyPressed(.F3) {
-			debug = !debug
-			player.set_mode(&pl, &w, .Fly if debug else .Walk)
-		}
-		player.update_movement(&pl, &w)
-		camera := player.camera_of(&pl)
-		if rl.IsKeyPressed(.F1) {
-			wireframe = !wireframe
-		}
-		if rl.IsKeyPressed(.F2) {
-			cull_frozen = !cull_frozen
-		}
-		if !cull_frozen {
-			frustum = render.camera_frustum(camera)
-		}
+		defer free_all(context.temp_allocator)
 
-		// Edit before meshing, so changes show this frame; re-pick so the
-		// outline moves to whatever is now targeted.
-		target, has_target := player.pick_block(&w, camera)
-		if player.update_block_edit(&edit, &w, target, has_target, player.player_box(&pl)) {
-			target, has_target = player.pick_block(&w, camera)
+		// Esc pauses, and so does losing focus (alt-tab), except in --frames
+		// runs, which must keep playing for repeatable profiles.
+		if screen == .Playing && (rl.IsKeyPressed(.ESCAPE) || (!rl.IsWindowFocused() && opts.frames == 0)) {
+			game_release_mouse(&game)
+			screen = .Paused
+		} else if screen == .Paused && rl.IsKeyPressed(.ESCAPE) {
+			game_capture_mouse(&game)
+			screen = .Playing
 		}
-
-		p := camera.position
-		center := world.block_to_chunk({i32(math.floor(p.x)), i32(math.floor(p.y)), i32(math.floor(p.z))})
-		if err := world.streamer_update(&s, &w, center); err != nil {
-			fmt.eprintln("chunk streaming failed:", err)
-			break
+		if screen == .Playing && !game_update(&game, &r) {
+			break main_loop // streaming failed (printed); game_close below still saves
 		}
-		render.renderer_forget_chunks(&r, s.unloaded[:])
-		render.renderer_update(&r, &w, center)
 
 		rl.BeginDrawing()
-		rl.ClearBackground(render.SKY_COLOR)
-
-		rl.BeginMode3D(camera)
-		if wireframe {
-			rlgl.EnableWireMode()
-		}
-		render.renderer_draw(&r, &frustum, camera.position)
-		if wireframe {
-			rlgl.DisableWireMode()
-		}
-		if has_target {
-			render.draw_block_outline(target.block)
-		}
-		rl.EndMode3D()
-
-		render.draw_crosshair()
-		if debug {
-			render.draw_debug_overlay(&r, &w, &s, camera, target if has_target else nil, edit.selected, wireframe, cull_frozen)
+		title_action := Title_Action.None
+		pause_action := Pause_Action.None
+		switch screen {
+		case .Title:
+			title_action = draw_title(play_label, title_message)
+		case .Playing, .Paused:
+			rl.ClearBackground(render.SKY_COLOR)
+			game_draw(&game, &r, screen == .Playing)
+			if screen == .Paused {
+				pause_action = draw_pause()
+			}
 		}
 		// Swaps buffers: includes the vsync wait and any GPU sync.
 		prof.begin("EndDrawing")
 		rl.EndDrawing()
 		prof.end()
 
-		session_tick(&sess, &w, &pl, f64(rl.GetFrameTime()))
+		switch title_action {
+		case .None:
+		case .Play:
+			if game_open(&game, opts, &r) {
+				screen = .Playing
+				title_message = nil
+			} else {
+				title_message = "Couldn't open the world (see the terminal for why)"
+			}
+		case .Quit:
+			break main_loop
+		}
+		switch pause_action {
+		case .None:
+		case .Resume:
+			game_capture_mouse(&game)
+			screen = .Playing
+		case .Quit_To_Title:
+			game_close(&game, &r)
+			screen = .Title
+		}
 	}
-	// Esc, closing the window, --frames, or a streaming error.
-	session_save(&sess, &w, &pl)
+	// Closing the window, Quit, --frames, or a streaming error.
+	if screen != .Title {
+		game_close(&game, &r)
+	}
+}
+
+// What the title screen's Play button opens.
+describe_play :: proc(opts: Options) -> cstring {
+	if opts.world != "" {
+		return fmt.caprintf("world '%s' (saves/%s)", opts.world, opts.world)
+	}
+	return fmt.caprintf("unsaved world, seed %d (pass --world NAME to save)", opts.seed)
+}
+
+@(private = "file")
+report_leaks :: proc(track: ^mem.Tracking_Allocator) {
+	if len(track.allocation_map) > 0 {
+		fmt.eprintfln("=== %d allocations not freed ===", len(track.allocation_map))
+		for _, entry in track.allocation_map {
+			fmt.eprintfln("- %v bytes @ %v", entry.size, entry.location)
+		}
+	}
+	if len(track.bad_free_array) > 0 {
+		fmt.eprintfln("=== %d bad frees ===", len(track.bad_free_array))
+		for entry in track.bad_free_array {
+			fmt.eprintfln("- %p @ %v", entry.memory, entry.location)
+		}
+	}
+	mem.tracking_allocator_destroy(track)
 }
