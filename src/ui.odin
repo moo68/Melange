@@ -7,6 +7,7 @@ package main
 import "core:fmt"
 import "core:math"
 import "melange:save"
+import "melange:settings"
 import "melange:textedit"
 import rl "third_party:raylib"
 
@@ -18,12 +19,14 @@ UI_TITLE_SIZE :: 80
 Title_Action :: enum {
 	None,
 	Play,
+	Settings,
 	Quit,
 }
 
 Pause_Action :: enum {
 	None,
 	Resume,
+	Settings,
 	Quit_To_Title,
 }
 
@@ -41,6 +44,9 @@ draw_title :: proc() -> (action: Title_Action) {
 	if button(w, &y, "Play") {
 		action = .Play
 	}
+	if button(w, &y, "Settings") {
+		action = .Settings
+	}
 	if button(w, &y, "Quit") {
 		action = .Quit
 	}
@@ -56,10 +62,77 @@ draw_pause :: proc() -> (action: Pause_Action) {
 	if button(w, &y, "Resume") {
 		action = .Resume
 	}
+	if button(w, &y, "Settings") {
+		action = .Settings
+	}
 	if button(w, &y, "Save & Quit to Title") {
 		action = .Quit_To_Title
 	}
 	return
+}
+
+// ---- Settings -------------------------------------------------------------------
+
+Settings_Action :: enum {
+	None,
+	Done,
+}
+
+// The settings screen; edits `s` in place (main applies FOV, sensitivity
+// and v-sync live, render distance on Done). `over_world` = opened from
+// the pause menu: drawn over the (already drawn) world instead of the sky.
+// Esc = Done.
+draw_settings :: proc(s: ^settings.Settings, over_world: bool) -> (action: Settings_Action) {
+	w, h := f32(rl.GetScreenWidth()), f32(rl.GetScreenHeight())
+	if over_world {
+		rl.DrawRectangle(0, 0, i32(w), i32(h), {0, 0, 0, 160})
+	} else {
+		rl.ClearBackground(SKY_UI)
+	}
+	centered_text("Settings", w, 30, rl.WHITE, 40)
+	panel_w := min(600, w - 40)
+	x0 := (w - panel_w) / 2
+	y: f32 = 110
+
+	rd := f32(s.render_distance)
+	slider_row(x0, &y, panel_w, fmt.ctprintf("Render distance: %d chunks", s.render_distance), &rd, settings.MIN_RENDER_DISTANCE, settings.MAX_RENDER_DISTANCE)
+	s.render_distance = int(math.round(rd))
+
+	fov := s.fov
+	fov_label := fmt.ctprintf("Field of view: %d degrees", int(math.round(s.fov)))
+	if math.round(s.fov) >= settings.MAX_FOV {
+		fov_label = "Field of view: Quake Pro!"
+	}
+	slider_row(x0, &y, panel_w, fov_label, &fov, settings.MIN_FOV, settings.MAX_FOV)
+	s.fov = math.round(fov)
+
+	pct := s.mouse_sensitivity * 100
+	slider_row(x0, &y, panel_w, fmt.ctprintf("Mouse sensitivity: %d%%", int(math.round(s.mouse_sensitivity * 100))), &pct, settings.MIN_MOUSE_SENSITIVITY * 100, settings.MAX_MOUSE_SENSITIVITY * 100)
+	s.mouse_sensitivity = math.round(pct / 5) * 5 / 100 // steps of 5%
+
+	if rl.GuiButton({x0, y, panel_w, UI_BUTTON_SIZE.y}, fmt.ctprintf("V-Sync: %s", "On" if s.vsync else "Off")) {
+		s.vsync = !s.vsync
+	}
+	y += UI_BUTTON_SIZE.y + 40
+
+	gap: f32 = UI_BUTTON_GAP
+	bw := (panel_w - gap) / 2
+	if rl.GuiButton({x0, y, bw, UI_BUTTON_SIZE.y}, "Reset to defaults") {
+		s^ = settings.DEFAULT
+	}
+	if rl.GuiButton({x0 + bw + gap, y, bw, UI_BUTTON_SIZE.y}, "Done") || rl.IsKeyPressed(.ESCAPE) {
+		action = .Done
+	}
+	return
+}
+
+// A label line, then a full-width slider under it; moves y below both.
+@(private = "file")
+slider_row :: proc(x0: f32, y: ^f32, width: f32, label: cstring, value: ^f32, lo, hi: f32) {
+	rl.DrawText(label, i32(x0), i32(y^), UI_TEXT_SIZE, rl.WHITE)
+	y^ += 28
+	rl.GuiSlider({x0, y^, width, 30}, nil, nil, value, lo, hi)
+	y^ += 30 + 24
 }
 
 // ---- World select --------------------------------------------------------------

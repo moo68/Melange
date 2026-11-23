@@ -45,3 +45,6 @@ Thumbs.db
 
 # World saves (./run.sh debug --world NAME)
 /saves/
+
+# Player settings (written by the settings screen)
+/settings.json

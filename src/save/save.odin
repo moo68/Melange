@@ -154,7 +154,7 @@ save_world :: proc(root: string, info: ^World_Info, w: ^world.World, now: i64) -
 	edits: [dynamic]byte
 	defer delete(edits)
 	world.edit_log_encode(w, &edits)
-	write_atomic(file_path(root, info.name, EDITS_FILE), edits[:]) or_return
+	write_file_atomic(file_path(root, info.name, EDITS_FILE), edits[:]) or_return
 
 	info.version = FORMAT_VERSION
 	info.last_played = now
@@ -162,7 +162,7 @@ save_world :: proc(root: string, info: ^World_Info, w: ^world.World, now: i64) -
 	if marshal_err != nil {
 		return .Write_Failed
 	}
-	return write_atomic(file_path(root, info.name, INFO_FILE), text)
+	return write_file_atomic(file_path(root, info.name, INFO_FILE), text)
 }
 
 @(private)
@@ -170,9 +170,9 @@ file_path :: proc(root, name, file: string) -> string {
 	return strings.concatenate({root, "/", name, "/", file}, context.temp_allocator)
 }
 
-// Writes path + ".tmp", syncs it to disk, then renames it over `path`.
-@(private)
-write_atomic :: proc(path: string, data: []byte) -> Error {
+// Writes path + ".tmp", syncs it to disk, then renames it over `path`, so
+// a crash mid-write leaves the old file intact. Also used for settings.json.
+write_file_atomic :: proc(path: string, data: []byte) -> Error {
 	tmp := strings.concatenate({path, TMP_SUFFIX}, context.temp_allocator)
 	f, open_err := os.open(tmp, {.Write, .Create, .Trunc}, os.Permissions_Default_File)
 	if open_err != nil {

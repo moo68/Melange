@@ -5,6 +5,7 @@ import "core:mem"
 import "melange:prof"
 import "melange:render"
 import "melange:save"
+import "melange:settings"
 import rl "third_party:raylib"
 
 // Written by `./run.sh profile` builds (-define:PROFILE=true); open it in Spall.
@@ -16,6 +17,7 @@ Screen :: enum {
 	Create_World,
 	Playing,
 	Paused,
+	Settings, // from the title or the pause menu (settings_from)
 }
 
 main :: proc() {
@@ -43,7 +45,20 @@ main :: proc() {
 		defer fmt.println("profiling: trace written to", TRACE_PATH)
 	}
 
-	rl.SetConfigFlags({.WINDOW_RESIZABLE, .VSYNC_HINT, .MSAA_4X_HINT})
+	// settings.json, except in --frames runs (profiles stay comparable).
+	cfg := settings.DEFAULT
+	if opts.frames == 0 {
+		warning: string
+		if cfg, warning = settings.settings_load(settings.PATH); warning != "" {
+			fmt.eprintln(warning)
+		}
+	}
+
+	flags := rl.ConfigFlags{.WINDOW_RESIZABLE, .MSAA_4X_HINT}
+	if cfg.vsync {
+		flags += {.VSYNC_HINT}
+	}
+	rl.SetConfigFlags(flags)
 	rl.InitWindow(1280, 720, "Melange")
 	defer rl.CloseWindow()
 	rl.SetExitKey(.KEY_NULL) // Esc pauses; only closing the window quits
@@ -64,11 +79,15 @@ main :: proc() {
 	// --world/--seed/--frames go straight into that world; otherwise start
 	// on the title screen.
 	game: Game
+	has_game := false // a world is open (Playing, Paused, or Settings from Paused)
 	screen := Screen.Title
+	settings_from := Screen.Title // where Settings returns to
+	vsync_applied := cfg.vsync
 	if opts.direct {
-		if game_open(&game, request_from_opts(opts), &r) != "" {
+		if game_open(&game, request_from_opts(opts), &r, cfg) != "" {
 			return
 		}
+		has_game = true
 		screen = .Playing
 	}
 	ws: World_Select // while on the world select screen
@@ -91,7 +110,7 @@ main :: proc() {
 			game_capture_mouse(&game)
 			screen = .Playing
 		}
-		if screen == .Playing && !game_update(&game, &r) {
+		if screen == .Playing && !game_update(&game, &r, cfg) {
 			break main_loop // streaming failed (printed); game_close below still saves
 		}
 
@@ -100,6 +119,7 @@ main :: proc() {
 		select_action := World_Select_Action.None
 		create_action := Create_World_Action.None
 		pause_action := Pause_Action.None
+		settings_action := Settings_Action.None
 		switch screen {
 		case .Title:
 			title_action = draw_title()
@@ -113,6 +133,12 @@ main :: proc() {
 			if screen == .Paused {
 				pause_action = draw_pause()
 			}
+		case .Settings:
+			if has_game {
+				rl.ClearBackground(render.SKY_COLOR)
+				game_draw(&game, &r, false)
+			}
+			settings_action = draw_settings(&cfg, has_game)
 		}
 		// Swaps buffers: includes the vsync wait and any GPU sync.
 		prof.begin("EndDrawing")
@@ -124,6 +150,9 @@ main :: proc() {
 		case .Play:
 			world_select_open(&ws)
 			screen = .World_Select
+		case .Settings:
+			settings_from = .Title
+			screen = .Settings
 		case .Quit:
 			break main_loop
 		}
@@ -131,8 +160,9 @@ main :: proc() {
 		case .None:
 		case .Play:
 			name, _ := world_select_playable(&ws)
-			if failure := game_open(&game, {name = name}, &r); failure == "" {
+			if failure := game_open(&game, {name = name}, &r, cfg); failure == "" {
 				world_select_close(&ws)
+				has_game = true
 				screen = .Playing
 			} else {
 				world_select_set_message(&ws, failure)
@@ -156,7 +186,8 @@ main :: proc() {
 		switch create_action {
 		case .None:
 		case .Create:
-			if failure := game_open(&game, create_world_request(&cw), &r); failure == "" {
+			if failure := game_open(&game, create_world_request(&cw), &r, cfg); failure == "" {
+				has_game = true
 				screen = .Playing
 			} else {
 				create_world_set_message(&cw, failure)
@@ -170,13 +201,38 @@ main :: proc() {
 		case .Resume:
 			game_capture_mouse(&game)
 			screen = .Playing
+		case .Settings:
+			settings_from = .Paused
+			screen = .Settings
 		case .Quit_To_Title:
 			game_close(&game, &r)
+			has_game = false
 			screen = .Title
+		}
+		switch settings_action {
+		case .None:
+		case .Done:
+			cfg = settings.settings_clamp(cfg)
+			if has_game {
+				game_set_render_distance(&game, &r, cfg.render_distance)
+			}
+			if !settings.settings_save(settings.PATH, cfg) {
+				fmt.eprintln("couldn't save", settings.PATH)
+			}
+			screen = settings_from
+		}
+		// V-Sync applies as soon as it's toggled.
+		if cfg.vsync != vsync_applied {
+			if cfg.vsync {
+				rl.SetWindowState({.VSYNC_HINT})
+			} else {
+				rl.ClearWindowState({.VSYNC_HINT})
+			}
+			vsync_applied = cfg.vsync
 		}
 	}
 	// Closing the window, Quit, --frames, or a streaming error.
-	if screen != .Title {
+	if has_game {
 		game_close(&game, &r)
 	}
 }

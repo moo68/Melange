@@ -24,7 +24,7 @@ Player :: struct {
 	waiting:     bool, // walk physics paused until the chunks around the player load
 }
 
-FOV_Y :: 70 // vertical field of view, degrees
+FOV_Y :: 70 // default vertical field of view, degrees (settings.DEFAULT.fov)
 
 // How far up switching to walk mode searches for room when inside terrain.
 UNSTUCK_SEARCH :: 128
@@ -64,14 +64,15 @@ player_box :: proc(p: ^Player) -> geom.AABB {
 }
 
 // The raylib camera for drawing and picking: at the eye, looking along the
-// player's view direction.
-camera_of :: proc(p: ^Player) -> rl.Camera3D {
+// player's view direction, with a vertical field of view of `fov_y` degrees
+// (the fov setting; FOV_Y is the default).
+camera_of :: proc(p: ^Player, fov_y: f32 = FOV_Y) -> rl.Camera3D {
 	eye := eye_position(p)
 	return {
 		position = eye,
 		target = eye + geom.look_direction(p.yaw, p.pitch),
 		up = {0, 1, 0},
-		fovy = FOV_Y,
+		fovy = fov_y,
 		projection = .PERSPECTIVE,
 	}
 }
@@ -105,14 +106,16 @@ set_mode :: proc(p: ^Player, w: ^world.World, mode: Move_Mode) {
 CAPTURE_IGNORE_FRAMES :: 10
 
 // Mouse look: right turns right, down looks down. Pass look = false to
-// ignore the mouse this frame (see CAPTURE_IGNORE_FRAMES).
-update_look :: proc(p: ^Player, look := true) {
+// ignore the mouse this frame (see CAPTURE_IGNORE_FRAMES). `sensitivity`
+// scales MOUSE_SENSITIVITY (the mouse sensitivity setting, 1 = 100%).
+update_look :: proc(p: ^Player, look := true, sensitivity: f32 = 1) {
 	if !look {
 		return
 	}
 	mouse := rl.GetMouseDelta()
-	p.yaw += mouse.x * MOUSE_SENSITIVITY
-	p.pitch = geom.clamp_pitch(p.pitch - mouse.y * MOUSE_SENSITIVITY)
+	deg_per_px := MOUSE_SENSITIVITY * sensitivity
+	p.yaw += mouse.x * deg_per_px
+	p.pitch = geom.clamp_pitch(p.pitch - mouse.y * deg_per_px)
 	// Keep yaw in [0, 360) so it never loses float precision over a long session.
 	for p.yaw >= 360 {
 		p.yaw -= 360

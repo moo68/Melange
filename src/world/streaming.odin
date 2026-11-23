@@ -29,12 +29,12 @@ Stream_Config :: struct {
 }
 
 DEFAULT_STREAM_CONFIG :: Stream_Config {
-	radius        = 28,
+	radius        = 16, // the settings default (settings.DEFAULT.render_distance)
 	vertical      = 8, // ±128 blocks: covers the tallest peaks (TERRAIN_MAX_HEIGHT) from the plains
 	unload_margin = 2,
 	load_budget   = 32,
 	unload_budget = 64,
-	scan_budget   = 8192, // the 41,701-chunk shape in ~5 updates, ~0.1 ms each
+	scan_budget   = 8192, // ~0.1 ms per update; the radius-32 shape (~54k chunks) in ~7 updates
 	region_scan_budget = 32,
 }
 

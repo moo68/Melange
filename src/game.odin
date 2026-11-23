@@ -9,6 +9,7 @@ import "core:math"
 import "melange:geom"
 import "melange:player"
 import "melange:render"
+import "melange:settings"
 import "melange:world"
 import rl "third_party:raylib"
 import "third_party:raylib/rlgl"
@@ -37,7 +38,7 @@ Game :: struct {
 
 // Opens the world `req` (see session_open). On failure returns why (also
 // printed; temp-allocated).
-game_open :: proc(g: ^Game, req: World_Request, r: ^render.Renderer) -> (failure: string) {
+game_open :: proc(g: ^Game, req: World_Request, r: ^render.Renderer, cfg: settings.Settings) -> (failure: string) {
 	g^ = {}
 	sess, failed := session_open(req, &g.w, &g.pl, &g.debug)
 	if failed != "" {
@@ -45,16 +46,35 @@ game_open :: proc(g: ^Game, req: World_Request, r: ^render.Renderer) -> (failure
 	}
 	g.sess = sess
 	// Loads/unloads chunks around the camera each frame.
-	world.streamer_init(&g.s)
-	// Fully fogged just before chunks can be missing, so the world's edge
-	// and chunks popping in are never visible.
-	fog_end := world.stream_meshed_distance(g.s.config)
-	render.renderer_set_fog(r, fog_end * 0.55, fog_end)
+	stream := world.DEFAULT_STREAM_CONFIG
+	stream.radius = i32(cfg.render_distance)
+	world.streamer_init(&g.s, stream)
+	set_fog(g, r)
 	g.edit = player.DEFAULT_EDIT_STATE
-	g.camera = player.camera_of(&g.pl)
+	g.camera = player.camera_of(&g.pl, cfg.fov)
 	g.frustum = render.camera_frustum(g.camera)
 	game_capture_mouse(g)
 	return ""
+}
+
+// Changes the render distance of the open world (the streamer restarts its
+// passes; chunks beyond the new range unload over the next frames).
+game_set_render_distance :: proc(g: ^Game, r: ^render.Renderer, chunks: int) {
+	if i32(chunks) == g.s.config.radius {
+		return
+	}
+	stream := g.s.config
+	stream.radius = i32(chunks)
+	world.streamer_set_config(&g.s, stream)
+	set_fog(g, r)
+}
+
+// Fully fogged just before chunks can be missing, so the world's edge and
+// chunks popping in are never visible.
+@(private = "file")
+set_fog :: proc(g: ^Game, r: ^render.Renderer) {
+	fog_end := world.stream_meshed_distance(g.s.config)
+	render.renderer_set_fog(r, fog_end * 0.55, fog_end)
 }
 
 // Saves and frees the world, and drops its meshes from the renderer.
@@ -82,15 +102,15 @@ game_release_mouse :: proc(_: ^Game) {
 
 // One frame of play: input, physics, editing, streaming, meshing, autosave.
 // Returns false if streaming failed (after printing why).
-game_update :: proc(g: ^Game, r: ^render.Renderer) -> bool {
-	player.update_look(&g.pl, g.ignore_mouse_frames == 0)
+game_update :: proc(g: ^Game, r: ^render.Renderer, cfg: settings.Settings) -> bool {
+	player.update_look(&g.pl, g.ignore_mouse_frames == 0, cfg.mouse_sensitivity)
 	g.ignore_mouse_frames = max(g.ignore_mouse_frames - 1, 0)
 	if rl.IsKeyPressed(.F3) {
 		g.debug = !g.debug
 		player.set_mode(&g.pl, &g.w, .Fly if g.debug else .Walk)
 	}
 	player.update_movement(&g.pl, &g.w)
-	g.camera = player.camera_of(&g.pl)
+	g.camera = player.camera_of(&g.pl, cfg.fov)
 	if rl.IsKeyPressed(.F1) {
 		g.wireframe = !g.wireframe
 	}
