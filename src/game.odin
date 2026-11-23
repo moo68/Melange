@@ -51,7 +51,7 @@ game_open :: proc(g: ^Game, req: World_Request, r: ^render.Renderer, cfg: settin
 	world.streamer_init(&g.s, stream)
 	set_fog(g, r)
 	g.edit = player.DEFAULT_EDIT_STATE
-	g.camera = player.camera_of(&g.pl, cfg.fov)
+	g.camera = player.camera_of(&g.pl, cfg.fov, cfg.fov_effects)
 	g.frustum = render.camera_frustum(g.camera)
 	game_capture_mouse(g)
 	return ""
@@ -110,7 +110,7 @@ game_update :: proc(g: ^Game, r: ^render.Renderer, cfg: settings.Settings) -> bo
 		player.set_mode(&g.pl, &g.w, .Fly if g.debug else .Walk)
 	}
 	player.update_movement(&g.pl, &g.w)
-	g.camera = player.camera_of(&g.pl, cfg.fov)
+	g.camera = player.camera_of(&g.pl, cfg.fov, cfg.fov_effects)
 	if rl.IsKeyPressed(.F1) {
 		g.wireframe = !g.wireframe
 	}

@@ -20,6 +20,7 @@ Settings :: struct {
 	render_distance:   int, // chunks (streaming radius)
 	fov:               f32, // vertical field of view, degrees
 	mouse_sensitivity: f32, // multiplier of player.MOUSE_SENSITIVITY (1 = 100%)
+	fov_effects:       f32, // how much sprinting widens the FOV: 0 = off, 1 = full (geom.SPRINT_FOV_SCALE)
 	vsync:             bool,
 }
 
@@ -28,6 +29,7 @@ DEFAULT :: Settings {
 	render_distance   = 16,
 	fov               = 70,
 	mouse_sensitivity = 1,
+	fov_effects       = 1,
 	vsync             = true,
 }
 
@@ -37,6 +39,8 @@ MIN_FOV :: 50
 MAX_FOV :: 110
 MIN_MOUSE_SENSITIVITY :: 0.1
 MAX_MOUSE_SENSITIVITY :: 3
+MIN_FOV_EFFECTS :: 0
+MAX_FOV_EFFECTS :: 1
 
 // `s` with every value in range (NaN becomes the default) and the current
 // version.
@@ -46,6 +50,7 @@ settings_clamp :: proc(s: Settings) -> Settings {
 	out.render_distance = clamp(s.render_distance, MIN_RENDER_DISTANCE, MAX_RENDER_DISTANCE)
 	out.fov = clamp_f32(s.fov, MIN_FOV, MAX_FOV, DEFAULT.fov)
 	out.mouse_sensitivity = clamp_f32(s.mouse_sensitivity, MIN_MOUSE_SENSITIVITY, MAX_MOUSE_SENSITIVITY, DEFAULT.mouse_sensitivity)
+	out.fov_effects = clamp_f32(s.fov_effects, MIN_FOV_EFFECTS, MAX_FOV_EFFECTS, DEFAULT.fov_effects)
 	return out
 }
 

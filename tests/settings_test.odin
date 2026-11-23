@@ -30,6 +30,7 @@ settings_defaults_and_round_trip :: proc(t: ^testing.T) {
 		render_distance   = 7,
 		fov               = 95,
 		mouse_sensitivity = 0.35,
+		fov_effects       = 0.25,
 		vsync             = false,
 	}
 	testing.expect(t, settings.settings_save(path, custom), "saved")
@@ -58,16 +59,19 @@ settings_read_leniently :: proc(t: ^testing.T) {
 		warn: bool,
 	} {
 		// Missing fields keep their defaults; unknown ones are ignored.
-		{`{"fov": 90}`, {version = 1, render_distance = 16, fov = 90, mouse_sensitivity = 1, vsync = true}, false},
-		{`{"vsync": false, "keybinds": {"jump": "space"}, "render_distance": 20}`, {version = 1, render_distance = 20, fov = 70, mouse_sensitivity = 1, vsync = false}, false},
+		{`{"fov": 90}`, {version = 1, render_distance = 16, fov = 90, mouse_sensitivity = 1, fov_effects = 1, vsync = true}, false},
+		{`{"vsync": false, "keybinds": {"jump": "space"}, "render_distance": 20}`, {version = 1, render_distance = 20, fov = 70, mouse_sensitivity = 1, fov_effects = 1, vsync = false}, false},
 		{`{}`, settings.DEFAULT, false},
+		{`{"fov_effects": 0}`, {version = 1, render_distance = 16, fov = 70, mouse_sensitivity = 1, fov_effects = 0, vsync = true}, false},
+		{`{"fov_effects": 2.5}`, settings.DEFAULT, false},
+		{`{"fov_effects": -1}`, {version = 1, render_distance = 16, fov = 70, mouse_sensitivity = 1, fov_effects = 0, vsync = true}, false},
 		// Out of range: clamped.
-		{`{"render_distance": 1000, "fov": 500, "mouse_sensitivity": 99}`, {version = 1, render_distance = 32, fov = 110, mouse_sensitivity = 3, vsync = true}, false},
-		{`{"render_distance": -5, "fov": -1, "mouse_sensitivity": 0}`, {version = 1, render_distance = 4, fov = 50, mouse_sensitivity = 0.1, vsync = true}, false},
-		{`{"render_distance": 4, "fov": 50, "mouse_sensitivity": 0.1}`, {version = 1, render_distance = 4, fov = 50, mouse_sensitivity = 0.1, vsync = true}, false},
-		{`{"render_distance": 32, "fov": 110, "mouse_sensitivity": 3}`, {version = 1, render_distance = 32, fov = 110, mouse_sensitivity = 3, vsync = true}, false},
+		{`{"render_distance": 1000, "fov": 500, "mouse_sensitivity": 99}`, {version = 1, render_distance = 32, fov = 110, mouse_sensitivity = 3, fov_effects = 1, vsync = true}, false},
+		{`{"render_distance": -5, "fov": -1, "mouse_sensitivity": 0}`, {version = 1, render_distance = 4, fov = 50, mouse_sensitivity = 0.1, fov_effects = 1, vsync = true}, false},
+		{`{"render_distance": 4, "fov": 50, "mouse_sensitivity": 0.1}`, {version = 1, render_distance = 4, fov = 50, mouse_sensitivity = 0.1, fov_effects = 1, vsync = true}, false},
+		{`{"render_distance": 32, "fov": 110, "mouse_sensitivity": 3}`, {version = 1, render_distance = 32, fov = 110, mouse_sensitivity = 3, fov_effects = 1, vsync = true}, false},
 		// An older version (0) is read; a newer one gives defaults + a warning.
-		{`{"version": 0, "fov": 80}`, {version = 1, render_distance = 16, fov = 80, mouse_sensitivity = 1, vsync = true}, false},
+		{`{"version": 0, "fov": 80}`, {version = 1, render_distance = 16, fov = 80, mouse_sensitivity = 1, fov_effects = 1, vsync = true}, false},
 		{`{"version": 2, "fov": 80}`, settings.DEFAULT, true},
 		// Broken: defaults + a warning.
 		{`{"fov": `, settings.DEFAULT, true},
@@ -89,6 +93,7 @@ settings_clamp_handles_nan :: proc(t: ^testing.T) {
 	s := settings.DEFAULT
 	s.fov = math.nan_f32()
 	s.mouse_sensitivity = math.nan_f32()
+	s.fov_effects = math.nan_f32()
 	s.version = 0
 	got := settings.settings_clamp(s)
 	testing.expect_value(t, got, settings.DEFAULT)

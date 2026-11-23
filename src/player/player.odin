@@ -1,5 +1,6 @@
 package player
 
+import "core:math"
 import "melange:geom"
 import "melange:world"
 import rl "third_party:raylib"
@@ -22,6 +23,7 @@ Player :: struct {
 	pitch:       f32, // degrees, clamped by geom.clamp_pitch
 	mode:        Move_Mode,
 	waiting:     bool, // walk physics paused until the chunks around the player load
+	fov_scale:   f32, // speed FOV multiplier (geom.speed_fov_*): 1 standing/walking, up to 1.15 sprinting
 }
 
 FOV_Y :: 70 // default vertical field of view, degrees (settings.DEFAULT.fov)
@@ -47,6 +49,7 @@ player_at :: proc(feet: [3]f64, yaw, pitch: f32) -> Player {
 		yaw = yaw,
 		pitch = pitch,
 		mode = .Walk,
+		fov_scale = 1,
 	}
 }
 
@@ -65,14 +68,15 @@ player_box :: proc(p: ^Player) -> geom.AABB {
 
 // The raylib camera for drawing and picking: at the eye, looking along the
 // player's view direction, with a vertical field of view of `fov_y` degrees
-// (the fov setting; FOV_Y is the default).
-camera_of :: proc(p: ^Player, fov_y: f32 = FOV_Y) -> rl.Camera3D {
+// (the fov setting; FOV_Y is the default) widened by the speed FOV, scaled
+// by `fov_effects` (the FOV effects setting, 0 = off).
+camera_of :: proc(p: ^Player, fov_y: f32 = FOV_Y, fov_effects: f32 = 1) -> rl.Camera3D {
 	eye := eye_position(p)
 	return {
 		position = eye,
 		target = eye + geom.look_direction(p.yaw, p.pitch),
 		up = {0, 1, 0},
-		fovy = fov_y,
+		fovy = geom.speed_fov_apply(fov_y, p.fov_scale, fov_effects),
 		projection = .PERSPECTIVE,
 	}
 }
@@ -89,6 +93,7 @@ set_mode :: proc(p: ^Player, w: ^world.World, mode: Move_Mode) {
 	p.accumulator = 0
 	p.eye_height = geom.EYE_HEIGHT // stand up (fly mode has no crouch)
 	p.prev_eye_height = geom.EYE_HEIGHT
+	p.fov_scale = 1
 	if mode == .Walk {
 		if lift, ok := geom.find_free_lift(player_box(p), UNSTUCK_SEARCH, w, world.world_blocks_movement); ok {
 			p.body.position.y += lift
@@ -132,5 +137,14 @@ update_movement :: proc(p: ^Player, w: ^world.World) {
 		update_fly(p)
 	case .Walk:
 		update_walk(p, w)
+		update_speed_fov(p, f64(rl.GetFrameTime()))
 	}
+}
+
+// Moves the speed FOV multiplier toward the one for the body's current
+// horizontal speed (walk mode only; fly mode keeps 1).
+update_speed_fov :: proc(p: ^Player, dt: f64) {
+	v := p.body.velocity
+	target := geom.speed_fov_target(math.sqrt(v.x * v.x + v.z * v.z))
+	p.fov_scale = f32(geom.speed_fov_step(f64(p.fov_scale), target, dt))
 }

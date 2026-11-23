@@ -78,8 +78,8 @@ Settings_Action :: enum {
 	Done,
 }
 
-// The settings screen; edits `s` in place (main applies FOV, sensitivity
-// and v-sync live, render distance on Done). `over_world` = opened from
+// The settings screen; edits `s` in place (main applies FOV, sensitivity,
+// FOV effects and v-sync live, render distance on Done). `over_world` = opened from
 // the pause menu: drawn over the (already drawn) world instead of the sky.
 // Esc = Done.
 draw_settings :: proc(s: ^settings.Settings, over_world: bool) -> (action: Settings_Action) {
@@ -109,6 +109,14 @@ draw_settings :: proc(s: ^settings.Settings, over_world: bool) -> (action: Setti
 	pct := s.mouse_sensitivity * 100
 	slider_row(x0, &y, panel_w, fmt.ctprintf("Mouse sensitivity: %d%%", int(math.round(s.mouse_sensitivity * 100))), &pct, settings.MIN_MOUSE_SENSITIVITY * 100, settings.MAX_MOUSE_SENSITIVITY * 100)
 	s.mouse_sensitivity = math.round(pct / 5) * 5 / 100 // steps of 5%
+
+	fx := s.fov_effects * 100
+	fx_label := fmt.ctprintf("FOV effects: %d%%", int(math.round(s.fov_effects * 100)))
+	if s.fov_effects <= 0 {
+		fx_label = "FOV effects: Off"
+	}
+	slider_row(x0, &y, panel_w, fx_label, &fx, settings.MIN_FOV_EFFECTS * 100, settings.MAX_FOV_EFFECTS * 100)
+	s.fov_effects = math.round(fx / 5) * 5 / 100 // steps of 5%
 
 	if rl.GuiButton({x0, y, panel_w, UI_BUTTON_SIZE.y}, fmt.ctprintf("V-Sync: %s", "On" if s.vsync else "Off")) {
 		s.vsync = !s.vsync
