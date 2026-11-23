@@ -7,6 +7,7 @@ package main
 import "core:fmt"
 import "core:math"
 import "melange:save"
+import "melange:textedit"
 import rl "third_party:raylib"
 
 UI_TEXT_SIZE :: 20
@@ -67,6 +68,7 @@ World_Select_Action :: enum {
 	None,
 	Play, // the selected world
 	Delete, // the selected world (already confirmed)
+	Create, // open the create world screen
 	Back,
 }
 
@@ -119,7 +121,7 @@ draw_world_select :: proc(ws: ^World_Select, now: i64) -> (action: World_Select_
 	panel_w := min(720, w - 40)
 	x0 := (w - panel_w) / 2
 	centered_text("Select World", w, 30, rl.WHITE, 40)
-	list := rl.Rectangle{x0, 90, panel_w, max(UI_ROW_HEIGHT * 2, h - 90 - 150)}
+	list := rl.Rectangle{x0, 90, panel_w, max(UI_ROW_HEIGHT * 2, h - 90 - 200)}
 	n := len(ws.entries)
 	_, can_play := world_select_playable(ws)
 	input := !ws.confirm_delete
@@ -179,7 +181,7 @@ draw_world_select :: proc(ws: ^World_Select, now: i64) -> (action: World_Select_
 	rl.DrawRectangleRec(list, style_color(.DEFAULT, i32(rl.GuiDefaultProperty.BACKGROUND_COLOR)))
 	rl.DrawRectangleLinesEx(list, 1, style_color(.DEFAULT, i32(rl.GuiControlProperty.BORDER_COLOR_NORMAL)))
 	if n == 0 {
-		centered_text("No worlds yet. Run with --world NAME to make one.", w, list.y + list.height / 2 - 10, style_color(.DEFAULT, i32(rl.GuiControlProperty.TEXT_COLOR_NORMAL)))
+		centered_text("No worlds yet. Click Create New World.", w, list.y + list.height / 2 - 10, style_color(.DEFAULT, i32(rl.GuiControlProperty.TEXT_COLOR_NORMAL)))
 	}
 	rl.BeginScissorMode(i32(list.x), i32(list.y), i32(list.width), i32(list.height))
 	buf: [64]u8
@@ -222,8 +224,9 @@ draw_world_select :: proc(ws: ^World_Select, now: i64) -> (action: World_Select_
 		rl.GuiLock()
 	}
 	gap: f32 = UI_BUTTON_GAP
-	bw := (panel_w - 2 * gap) / 3
+	bw := (panel_w - gap) / 2
 	by := list.y + list.height + 20
+	by2 := by + UI_BUTTON_SIZE.y + gap
 	if !can_play {
 		rl.GuiDisable()
 	}
@@ -231,18 +234,21 @@ draw_world_select :: proc(ws: ^World_Select, now: i64) -> (action: World_Select_
 		action = .Play
 	}
 	rl.GuiEnable()
+	if rl.GuiButton({x0 + bw + gap, by, bw, UI_BUTTON_SIZE.y}, "Create New World") {
+		action = .Create
+	}
 	if ws.selected < 0 {
 		rl.GuiDisable()
 	}
-	if rl.GuiButton({x0 + bw + gap, by, bw, UI_BUTTON_SIZE.y}, "Delete") {
+	if rl.GuiButton({x0, by2, bw, UI_BUTTON_SIZE.y}, "Delete") {
 		ws.confirm_delete = true
 	}
 	rl.GuiEnable()
-	if rl.GuiButton({x0 + 2 * (bw + gap), by, bw, UI_BUTTON_SIZE.y}, "Back") {
+	if rl.GuiButton({x0 + bw + gap, by2, bw, UI_BUTTON_SIZE.y}, "Back") {
 		action = .Back
 	}
 	if ws.message_len > 0 {
-		centered_text(cstring(raw_data(ws.message[:])), w, by + UI_BUTTON_SIZE.y + 14, UI_ERROR_COLOR)
+		centered_text(cstring(raw_data(ws.message[:])), w, by2 + UI_BUTTON_SIZE.y + 14, UI_ERROR_COLOR)
 	}
 	rl.GuiUnlock()
 
@@ -274,6 +280,256 @@ draw_world_select :: proc(ws: ^World_Select, now: i64) -> (action: World_Select_
 		rl.GuiUnlock()
 	}
 	return
+}
+
+// ---- Create world ------------------------------------------------------------
+
+Create_World_Action :: enum {
+	None,
+	Create, // create_world_request says what
+	Cancel,
+}
+
+// The create world screen's state; lives while the screen is open.
+Create_World :: struct {
+	name:         textedit.Field,
+	seed:         textedit.Field,
+	name_scroll:  f32, // text_field horizontal scroll, per field
+	seed_scroll:  f32,
+	focus:        int, // 0 = name field, 1 = seed field
+	keys:         Field_Keys, // key repeat + caret blink of the focused field
+	// check_new_name result for `checked` (re-checked only when the name changes)
+	problem:      save.Name_Problem,
+	checked:      textedit.Field,
+	checked_once: bool,
+	message:      [256]u8, // why creating failed, shown in red ("" = none)
+	message_len:  int,
+}
+
+create_world_open :: proc(cw: ^Create_World) {
+	cw^ = {}
+	cw.name.max_len = save.MAX_NAME_LEN
+	buf: [save.MAX_NAME_LEN + 16]u8
+	textedit.field_set(&cw.name, save.default_new_name(save.SAVES_DIR, buf[:]))
+	cw.seed.max_len = textedit.MAX_BYTES
+}
+
+create_world_set_message :: proc(cw: ^Create_World, msg: string) {
+	cw.message_len = copy(cw.message[:len(cw.message) - 1], msg)
+	cw.message[cw.message_len] = 0
+}
+
+// The world the form describes (seed_set = false for a random seed).
+create_world_request :: proc(cw: ^Create_World) -> World_Request {
+	seed, kind := save.seed_from_text(textedit.field_text(&cw.seed))
+	return {name = textedit.field_text(&cw.name), seed = seed, seed_set = kind != .Random, create = true}
+}
+
+// The form: click a field (or Tab) to switch fields, Enter creates, Esc
+// cancels. Create is disabled while the name has a problem.
+draw_create_world :: proc(cw: ^Create_World) -> (action: Create_World_Action) {
+	rl.ClearBackground(SKY_UI)
+	w := f32(rl.GetScreenWidth())
+	panel_w := min(600, w - 40)
+	x0 := (w - panel_w) / 2
+	centered_text("Create New World", w, 30, rl.WHITE, 40)
+	hint_color := rl.Color{255, 255, 255, 210}
+
+	// Name check, only when the name changed.
+	name := textedit.field_text(&cw.name)
+	if !cw.checked_once || name != textedit.field_text(&cw.checked) {
+		cw.problem = save.check_new_name(save.SAVES_DIR, name)
+		cw.checked = cw.name
+		cw.checked_once = true
+	}
+	seed, kind := save.seed_from_text(textedit.field_text(&cw.seed))
+
+	name_box := rl.Rectangle{x0, 148, panel_w, UI_BUTTON_SIZE.y}
+	seed_box := rl.Rectangle{x0, 278, panel_w, UI_BUTTON_SIZE.y}
+	old_focus := cw.focus
+	if rl.IsKeyPressed(.TAB) {
+		cw.focus = 1 - cw.focus
+	}
+	if rl.IsMouseButtonPressed(.LEFT) {
+		mouse := rl.GetMousePosition()
+		if rl.CheckCollisionPointRec(mouse, name_box) {
+			cw.focus = 0
+		} else if rl.CheckCollisionPointRec(mouse, seed_box) {
+			cw.focus = 1
+		}
+	}
+	if cw.focus != old_focus {
+		cw.keys = {} // no repeat or blink carried over to the other field
+	}
+
+	rl.DrawText("World Name", i32(x0), i32(name_box.y - 26), UI_TEXT_SIZE, rl.WHITE)
+	text_field(&cw.name, name_box, cw.focus == 0, &cw.keys, &cw.name_scroll)
+	if cw.problem == .None {
+		rl.DrawText(fmt.ctprintf("Will be saved in %s/%s", save.SAVES_DIR, name), i32(x0), i32(name_box.y + name_box.height + 8), UI_TEXT_SIZE, hint_color)
+	} else {
+		rl.DrawText(fmt.ctprint(save.name_problem_text(cw.problem)), i32(x0), i32(name_box.y + name_box.height + 8), UI_TEXT_SIZE, UI_ERROR_COLOR)
+	}
+
+	rl.DrawText("Seed (optional)", i32(x0), i32(seed_box.y - 26), UI_TEXT_SIZE, rl.WHITE)
+	text_field(&cw.seed, seed_box, cw.focus == 1, &cw.keys, &cw.seed_scroll)
+	seed_hint: cstring
+	switch kind {
+	case .Random:
+		seed_hint = "Blank: a random seed"
+	case .Number:
+		seed_hint = fmt.ctprintf("Seed %d", seed)
+	case .Text:
+		seed_hint = fmt.ctprintf("Text seed -> %d", seed)
+	}
+	rl.DrawText(seed_hint, i32(x0), i32(seed_box.y + seed_box.height + 8), UI_TEXT_SIZE, hint_color)
+
+	gap: f32 = UI_BUTTON_GAP
+	bw := (panel_w - gap) / 2
+	by := seed_box.y + seed_box.height + 70
+	can_create := cw.problem == .None
+	if !can_create {
+		rl.GuiDisable()
+	}
+	if rl.GuiButton({x0, by, bw, UI_BUTTON_SIZE.y}, "Create") || (can_create && (rl.IsKeyPressed(.ENTER) || rl.IsKeyPressed(.KP_ENTER))) {
+		action = .Create
+	}
+	rl.GuiEnable()
+	if rl.GuiButton({x0 + bw + gap, by, bw, UI_BUTTON_SIZE.y}, "Cancel") || rl.IsKeyPressed(.ESCAPE) {
+		action = .Cancel
+	}
+	if cw.message_len > 0 {
+		centered_text(cstring(raw_data(cw.message[:])), w, by + UI_BUTTON_SIZE.y + 14, UI_ERROR_COLOR)
+	}
+	return
+}
+
+// ---- Text field ----------------------------------------------------------------
+// Our own single-line text box (editing logic in melange:textedit). Not
+// GuiTextBox: the vendored raygui repeats keys per frame (one character per
+// frame after 40 frames = 240 chars/s at 240 fps, not configurable in the
+// prebuilt lib), its hover colors are unreadable on our background, and
+// its caret overlaps letters.
+
+// Key repeat and caret blink for the focused field (reset on focus change).
+Field_Keys :: struct {
+	repeat: [4]textedit.Key_Repeat, // FIELD_REPEAT_KEYS
+	blink:  f32, // seconds since the last edit / move (caret shows first)
+}
+
+@(private = "file")
+FIELD_REPEAT_KEYS :: [4]rl.KeyboardKey{.LEFT, .RIGHT, .BACKSPACE, .DELETE}
+@(private = "file")
+FIELD_PAD :: 10
+@(private = "file")
+FIELD_SPACING :: 4 // between glyphs: room for a 2-px caret with 1 px clear on each side
+@(private = "file")
+FIELD_TEXT :: rl.Color{30, 30, 30, 255}
+
+// Edits `f` from this frame's keyboard input when focused (typing, Left /
+// Right / Home / End, Backspace / Delete with key repeat, Ctrl+V paste, a
+// click places the caret), then draws it. `scroll` keeps the caret in view
+// when the text is wider than the box.
+text_field :: proc(f: ^textedit.Field, bounds: rl.Rectangle, focused: bool, keys: ^Field_Keys, scroll: ^f32) {
+	text_x := bounds.x + FIELD_PAD
+	inner_w := bounds.width - 2 * FIELD_PAD
+	mouse := rl.GetMousePosition()
+	hovered := rl.CheckCollisionPointRec(mouse, bounds)
+
+	if focused {
+		dt := rl.GetFrameTime()
+		keys.blink += dt
+		for r := rl.GetCharPressed(); r != 0; r = rl.GetCharPressed() {
+			if textedit.field_insert(f, r) {
+				keys.blink = 0
+			}
+		}
+		ctrl := rl.IsKeyDown(.LEFT_CONTROL) || rl.IsKeyDown(.RIGHT_CONTROL)
+		if ctrl && rl.IsKeyPressed(.V) {
+			if clip := rl.GetClipboardText(); clip != nil {
+				textedit.field_insert_text(f, string(clip))
+				keys.blink = 0
+			}
+		}
+		for key, i in FIELD_REPEAT_KEYS {
+			n := textedit.key_repeat(&keys.repeat[i], rl.IsKeyPressed(key), rl.IsKeyDown(key), dt)
+			for _ in 0 ..< n {
+				#partial switch key {
+				case .LEFT:
+					textedit.field_left(f)
+				case .RIGHT:
+					textedit.field_right(f)
+				case .BACKSPACE:
+					textedit.field_backspace(f)
+				case .DELETE:
+					textedit.field_delete(f)
+				}
+			}
+			if n > 0 {
+				keys.blink = 0
+			}
+		}
+		if rl.IsKeyPressed(.HOME) {
+			textedit.field_home(f)
+			keys.blink = 0
+		}
+		if rl.IsKeyPressed(.END) {
+			textedit.field_end(f)
+			keys.blink = 0
+		}
+		if hovered && rl.IsMouseButtonPressed(.LEFT) {
+			// The caret goes to the character boundary nearest the click.
+			bounds_buf: [textedit.MAX_BYTES + 1]int
+			n := textedit.field_boundaries(f, bounds_buf[:])
+			best, best_d := 0, max(f32)
+			for b in bounds_buf[:n] {
+				d := abs(text_x - scroll^ + field_prefix_width(f, b) - mouse.x)
+				if d < best_d {
+					best, best_d = b, d
+				}
+			}
+			f.cursor = best
+			keys.blink = 0
+		}
+	}
+
+	// Keep the caret inside the box.
+	caret := field_prefix_width(f, f.cursor)
+	total := field_prefix_width(f, f.len)
+	if total <= inner_w {
+		scroll^ = 0
+	} else {
+		scroll^ = clamp(scroll^, caret - inner_w + FIELD_SPACING, caret)
+	}
+
+	border := rl.Color{110, 110, 110, 255}
+	if focused {
+		border = {40, 90, 160, 255}
+	} else if hovered {
+		border = {60, 60, 60, 255}
+	}
+	rl.DrawRectangleRec(bounds, {245, 245, 245, 255})
+	rl.DrawRectangleLinesEx(bounds, 2 if focused else 1, border)
+	rl.BeginScissorMode(i32(text_x - 3), i32(bounds.y), i32(inner_w + 6), i32(bounds.height))
+	text_y := bounds.y + (bounds.height - UI_TEXT_SIZE) / 2
+	rl.DrawTextEx(rl.GetFontDefault(), textedit.field_cstring(f), {text_x - scroll^, text_y}, UI_TEXT_SIZE, FIELD_SPACING, FIELD_TEXT)
+	if focused && math.mod(keys.blink, 1.0) < 0.6 {
+		// In the gap between glyphs: the previous glyph ends at `caret`, the
+		// next starts FIELD_SPACING later.
+		x := text_x - scroll^ + caret + (FIELD_SPACING / 2 - 1 if f.cursor > 0 else -3)
+		rl.DrawRectangleRec({x, text_y - 2, 2, UI_TEXT_SIZE + 4}, FIELD_TEXT)
+	}
+	rl.EndScissorMode()
+}
+
+// Width of the text before byte offset `upto`, as text_field draws it.
+@(private = "file")
+field_prefix_width :: proc(f: ^textedit.Field, upto: int) -> f32 {
+	if upto <= 0 {
+		return 0
+	}
+	tmp: [textedit.MAX_BYTES + 1]u8
+	copy(tmp[:], f.buf[:upto])
+	return rl.MeasureTextEx(rl.GetFontDefault(), cstring(raw_data(tmp[:])), UI_TEXT_SIZE, FIELD_SPACING).x
 }
 
 // Scrolls so the selected row is fully visible.

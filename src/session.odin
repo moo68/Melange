@@ -24,6 +24,7 @@ World_Request :: struct {
 	name:     string, // saves/<name>; "" = unsaved world with `seed`
 	seed:     i64, // for an unsaved or new world (if seed_set); an existing one must match
 	seed_set: bool, // false: a new world gets a random seed
+	create:   bool, // must be new: fail if saves/<name> already exists (never opens it)
 }
 
 // The world asked for on the command line.
@@ -48,6 +49,9 @@ session_open :: proc(req: World_Request, w: ^world.World, pl: ^player.Player, de
 		return msg
 	}
 
+	if req.create && save.check_new_name(save.SAVES_DIR, name) != .None {
+		return {}, fail("can't create world '%s': %s", name, save.name_problem_text(save.check_new_name(save.SAVES_DIR, name)))
+	}
 	if !save.world_exists(save.SAVES_DIR, name) {
 		seed := req.seed if req.seed_set else i64(rand.uint64())
 		sess.info = save.new_world_info(name, seed, unix_now())

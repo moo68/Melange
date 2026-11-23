@@ -13,6 +13,7 @@ TRACE_PATH :: "build/trace.spall"
 Screen :: enum {
 	Title,
 	World_Select,
+	Create_World,
 	Playing,
 	Paused,
 }
@@ -72,6 +73,7 @@ main :: proc() {
 	}
 	ws: World_Select // while on the world select screen
 	defer world_select_close(&ws)
+	cw: Create_World // while on the create world screen
 
 	main_loop: for frame := 0; !rl.WindowShouldClose(); frame += 1 {
 		if opts.frames > 0 && frame >= opts.frames {
@@ -96,12 +98,15 @@ main :: proc() {
 		rl.BeginDrawing()
 		title_action := Title_Action.None
 		select_action := World_Select_Action.None
+		create_action := Create_World_Action.None
 		pause_action := Pause_Action.None
 		switch screen {
 		case .Title:
 			title_action = draw_title()
 		case .World_Select:
 			select_action = draw_world_select(&ws, unix_now())
+		case .Create_World:
+			create_action = draw_create_world(&cw)
 		case .Playing, .Paused:
 			rl.ClearBackground(render.SKY_COLOR)
 			game_draw(&game, &r, screen == .Playing)
@@ -140,9 +145,25 @@ main :: proc() {
 				fmt.printfln("deleted world '%s'", name)
 				world_select_open(&ws) // rescan
 			}
+		case .Create:
+			world_select_close(&ws)
+			create_world_open(&cw)
+			screen = .Create_World
 		case .Back:
 			world_select_close(&ws)
 			screen = .Title
+		}
+		switch create_action {
+		case .None:
+		case .Create:
+			if failure := game_open(&game, create_world_request(&cw), &r); failure == "" {
+				screen = .Playing
+			} else {
+				create_world_set_message(&cw, failure)
+			}
+		case .Cancel:
+			world_select_open(&ws)
+			screen = .World_Select
 		}
 		switch pause_action {
 		case .None:
