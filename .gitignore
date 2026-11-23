@@ -42,3 +42,6 @@ Thumbs.db
 
 # Claude Code: per-user local settings (shared .claude/settings.json is fine to commit)
 .claude/settings.local.json
+
+# World saves (./run.sh debug --world NAME)
+/saves/

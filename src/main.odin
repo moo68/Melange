@@ -19,6 +19,19 @@ main :: proc() {
 		return
 	}
 
+	// The world and player: from saves/<--world> (or a new save there), or
+	// an unsaved world without --world.
+	w: world.World
+	pl: player.Player
+	// F3: debug mode = fly through blocks + the debug overlay.
+	debug := false
+	sess, opened := session_open(opts, &w, &pl, &debug)
+	if !opened {
+		return
+	}
+	defer world.world_destroy(&w)
+	defer session_close(&sess)
+
 	if !prof.init(TRACE_PATH) {
 		fmt.eprintln("failed to create", TRACE_PATH)
 		return
@@ -32,10 +45,6 @@ main :: proc() {
 	rl.SetConfigFlags({.WINDOW_RESIZABLE, .VSYNC_HINT, .MSAA_4X_HINT})
 	rl.InitWindow(1280, 720, "Melange")
 	defer rl.CloseWindow()
-
-	w: world.World
-	world.world_init(&w, opts.seed)
-	defer world.world_destroy(&w)
 
 	r: render.Renderer
 	switch render.renderer_init(&r) {
@@ -59,12 +68,8 @@ main :: proc() {
 	fog_end := world.stream_meshed_distance(s.config)
 	render.renderer_set_fog(&r, fog_end * 0.55, fog_end)
 
-	// Walking on the surface at the origin, looking toward +X+Z and a bit down.
-	pl := player.player_spawn(w.seed, 0, 0, 45, -10)
-	// F3: debug mode = fly through blocks + the debug overlay.
-	debug := false
 	rl.DisableCursor()
-	ignore_mouse_frames := 2 // see player.update_look
+	ignore_mouse_frames := player.CAPTURE_IGNORE_FRAMES
 	wireframe := false
 	// F2 freezes the culling frustum at the current camera so you can fly out
 	// and see which chunks are being culled.
@@ -106,7 +111,7 @@ main :: proc() {
 		center := world.block_to_chunk({i32(math.floor(p.x)), i32(math.floor(p.y)), i32(math.floor(p.z))})
 		if err := world.streamer_update(&s, &w, center); err != nil {
 			fmt.eprintln("chunk streaming failed:", err)
-			return
+			break
 		}
 		render.renderer_forget_chunks(&r, s.unloaded[:])
 		render.renderer_update(&r, &w, center)
@@ -135,5 +140,9 @@ main :: proc() {
 		prof.begin("EndDrawing")
 		rl.EndDrawing()
 		prof.end()
+
+		session_tick(&sess, &w, &pl, f64(rl.GetFrameTime()))
 	}
+	// Esc, closing the window, --frames, or a streaming error.
+	session_save(&sess, &w, &pl)
 }

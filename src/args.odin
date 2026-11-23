@@ -3,12 +3,15 @@ package main
 import "core:fmt"
 import "core:os"
 import "core:strconv"
+import "melange:save"
 
 DEFAULT_SEED :: 1337
 
 Options :: struct {
-	seed:   i64,
-	frames: int, // quit after this many frames (0 = run until closed); for repeatable profiling runs
+	seed:     i64,
+	seed_set: bool, // --seed given (a new world uses it; an existing one must match)
+	world:    string, // --world NAME: open or create saves/NAME ("" = unsaved world)
+	frames:   int, // quit after this many frames (0 = run until closed); for repeatable profiling runs
 }
 
 // Parses command-line options. Returns ok = false (after printing why) on bad input.
@@ -29,6 +32,18 @@ parse_args :: proc() -> (opts: Options, ok: bool) {
 				return opts, false
 			}
 			opts.seed = seed
+			opts.seed_set = true
+		case "--world":
+			if i + 1 >= len(args) {
+				fmt.eprintln("--world needs a name")
+				return opts, false
+			}
+			i += 1
+			if !save.valid_name(args[i]) {
+				fmt.eprintfln("--world: '%s' isn't a valid name (1-%d letters, digits, spaces, '-' or '_'; no leading/trailing space)", args[i], save.MAX_NAME_LEN)
+				return opts, false
+			}
+			opts.world = args[i]
 		case "--frames":
 			if i + 1 >= len(args) {
 				fmt.eprintln("--frames needs a value")
@@ -42,7 +57,7 @@ parse_args :: proc() -> (opts: Options, ok: bool) {
 			}
 			opts.frames = frames
 		case:
-			fmt.eprintfln("unknown argument '%s' (supported: --seed N, --frames N)", args[i])
+			fmt.eprintfln("unknown argument '%s' (supported: --world NAME, --seed N, --frames N)", args[i])
 			return opts, false
 		}
 	}

@@ -34,6 +34,11 @@ UNSTUCK_SEARCH :: 128
 // heights come from the seed alone.
 player_spawn :: proc(seed: i64, x, z: i32, yaw, pitch: f32) -> Player {
 	feet := [3]f64{f64(x) + 0.5, f64(world.terrain_height(seed, x, z) + 1) + geom.COLLISION_SKIN, f64(z) + 0.5}
+	return player_at(feet, yaw, pitch)
+}
+
+// A walking player with its feet at `feet` (e.g. restored from a save).
+player_at :: proc(feet: [3]f64, yaw, pitch: f32) -> Player {
 	return {
 		body = {position = feet},
 		prev_feet = feet,
@@ -92,9 +97,15 @@ set_mode :: proc(p: ^Player, w: ^world.World, mode: Move_Mode) {
 	p.alpha = 0
 }
 
+// Frames to ignore the mouse for after DisableCursor: raylib reports one
+// huge bogus delta (the cursor warping to the window center) on frame 1 or 2
+// (measured 2026-11-23; with only 2 ignored it hit about half the starts and
+// turned the restored view, usually downward). 10 leaves a safe margin and is
+// at most ~0.17 s even at 60 fps.
+CAPTURE_IGNORE_FRAMES :: 10
+
 // Mouse look: right turns right, down looks down. Pass look = false to
-// ignore the mouse this frame: right after DisableCursor the first mouse
-// delta can be a huge jump (cursor warped to window center).
+// ignore the mouse this frame (see CAPTURE_IGNORE_FRAMES).
 update_look :: proc(p: ^Player, look := true) {
 	if !look {
 		return
