@@ -6,8 +6,9 @@ import "melange:prof"
 import "melange:world"
 import rl "third_party:raylib"
 
-// WASD walk (normalized: diagonals aren't faster), Shift sprint, Space
-// jump (held: jumps again on landing). Physics runs in fixed 60 Hz steps;
+// WASD walk (normalized: diagonals aren't faster), Shift sprint, Left Ctrl
+// crouch (slower, lower eye, won't walk off edges; beats sprint), Space jump
+// (held: jumps again on landing). Physics runs in fixed 60 Hz steps;
 // the camera interpolates between the last two.
 update_walk :: proc(p: ^Player, w: ^world.World) {
 	prof.scope("player physics")
@@ -20,6 +21,7 @@ update_walk :: proc(p: ^Player, w: ^world.World) {
 	if p.waiting {
 		p.accumulator = 0
 		p.prev_feet = p.body.position
+		p.prev_eye_height = p.eye_height
 		p.alpha = 0
 		return
 	}
@@ -33,11 +35,14 @@ update_walk :: proc(p: ^Player, w: ^world.World) {
 		wish   = {f64(forward.x) * f + f64(right.x) * r, f64(forward.z) * f + f64(right.z) * r},
 		jump   = rl.IsKeyDown(.SPACE),
 		sprint = rl.IsKeyDown(.LEFT_SHIFT) || rl.IsKeyDown(.RIGHT_SHIFT),
+		crouch = rl.IsKeyDown(.LEFT_CONTROL),
 	}
 
 	steps, alpha := geom.fixed_steps(&p.accumulator, f64(rl.GetFrameTime()))
 	for _ in 0 ..< steps {
 		p.prev_feet = p.body.position
+		p.prev_eye_height = p.eye_height
+		p.eye_height = geom.eye_height_step(p.eye_height, input.crouch, geom.PHYSICS_DT)
 		geom.body_step(&p.body, input, geom.PHYSICS_DT, w, world.world_blocks_movement)
 	}
 	p.alpha = alpha

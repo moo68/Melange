@@ -105,12 +105,15 @@ sweep_axis :: proc(
 
 // Moves `b` by `delta`, one axis at a time: Y first (so landing is settled
 // before sliding), then X, then Z. Returns the displacement actually made
-// and which axes were blocked.
+// and which axes were blocked. With keep_support, if the Y move ended on the
+// ground, X and Z are also clamped by edge_clamp (and count as blocked when
+// it shortens them), so the box can't walk off an edge (crouching).
 move_aabb :: proc(
 	b: AABB,
 	delta: [3]f64,
 	data: $T,
 	is_solid: proc(data: T, cell: [3]i32) -> bool,
+	keep_support := false,
 ) -> (
 	moved: [3]f64,
 	blocked: [3]bool,
@@ -118,10 +121,90 @@ move_aabb :: proc(
 	box := b
 	for axis in ([3]int{1, 0, 2}) {
 		moved[axis], blocked[axis] = sweep_axis(box, axis, delta[axis], data, is_solid)
+		if axis != 1 && keep_support && blocked.y && delta.y < 0 {
+			clamped := edge_clamp(box, axis, moved[axis], data, is_solid)
+			blocked[axis] ||= clamped != moved[axis]
+			moved[axis] = clamped
+		}
 		box.min[axis] += moved[axis]
 		box.max[axis] += moved[axis]
 	}
 	return
+}
+
+// How far below the bottom of a box solid cells count as support for
+// edge_clamp. Less than one block: a 1-block drop is an edge.
+SUPPORT_DEPTH :: 0.5
+
+// Shortens a horizontal move of `b` by `delta` along `axis` (0 = x, 2 = z)
+// so the box stays continuously supported: some solid cell within
+// SUPPORT_DEPTH below its bottom stays under its footprint, overlapping it by
+// at least COLLISION_SKIN. Exact (not stepped), so a 0.6-wide box can hang
+// up to 0.3 - COLLISION_SKIN over an edge. Returns `delta` unchanged if the
+// box isn't supported to begin with. Assumes the box is at most 1 block wide
+// on `axis`, so it can't straddle a gap.
+edge_clamp :: proc(b: AABB, axis: int, delta: f64, data: $T, is_solid: proc(data: T, cell: [3]i32) -> bool) -> f64 {
+	if delta == 0 {
+		return 0
+	}
+	// The support slab under the box, and its range on the other horizontal
+	// axis. Its top stays a skin below the feet so a box resting a skin above
+	// a block top doesn't count its own (air) layer.
+	slab := b
+	slab.max.y = b.min.y - COLLISION_SKIN
+	slab.min.y = b.min.y - SUPPORT_DEPTH
+	other := 2 - axis
+	y0, y1 := cell_range(slab, 1)
+	o0, o1 := cell_range(slab, other)
+	column_solid :: proc(c: i32, axis, other: int, y0, y1, o0, o1: i32, data: $T, is_solid: proc(data: T, cell: [3]i32) -> bool) -> bool {
+		cell: [3]i32
+		cell[axis] = c
+		for y in y0 ..= y1 {
+			for o in o0 ..= o1 {
+				cell.y, cell[other] = y, o
+				if is_solid(data, cell) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+
+	lo, hi := cell_range(b, axis)
+	if delta > 0 {
+		// The furthest supported column among those under the box, then
+		// the run of supported columns ahead of it. The box's back face
+		// must stay a skin short of the run's far end.
+		edge := lo - 1
+		for c := hi; c >= lo; c -= 1 {
+			if column_solid(c, axis, other, y0, y1, o0, o1, data, is_solid) {
+				edge = c
+				break
+			}
+		}
+		if edge < lo {
+			return delta
+		}
+		for f64(edge + 1) - COLLISION_SKIN - b.min[axis] < delta && column_solid(edge + 1, axis, other, y0, y1, o0, o1, data, is_solid) {
+			edge += 1
+		}
+		return clamp(f64(edge + 1) - COLLISION_SKIN - b.min[axis], 0, delta)
+	} else {
+		edge := hi + 1
+		for c := lo; c <= hi; c += 1 {
+			if column_solid(c, axis, other, y0, y1, o0, o1, data, is_solid) {
+				edge = c
+				break
+			}
+		}
+		if edge > hi {
+			return delta
+		}
+		for f64(edge) + COLLISION_SKIN - b.max[axis] > delta && column_solid(edge - 1, axis, other, y0, y1, o0, o1, data, is_solid) {
+			edge -= 1
+		}
+		return clamp(f64(edge) + COLLISION_SKIN - b.max[axis], delta, 0)
+	}
 }
 
 // How far up (in whole-block lifts from the cell boundary at or below the

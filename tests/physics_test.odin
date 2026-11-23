@@ -393,3 +393,182 @@ body_stands_and_walks_on_generated_terrain :: proc(t: ^testing.T) {
 	under := [3]i32{i32(math.floor(b.position.x)), i32(math.floor(b.position.y)) - 1, i32(math.floor(b.position.z))}
 	testing.expect(t, abs(b.position.y - f64(under.y + 1) - geom.COLLISION_SKIN) < 1e-9, "feet a skin above a block top")
 }
+
+// ---- Crouching ----------------------------------------------------------------------
+
+@(test)
+crouching_is_slower_and_beats_sprint :: proc(t: ^testing.T) {
+	s := Scene{floor = 0}
+	b := standing(&s, 0.5, 0.5)
+	simulate(&b, {wish = {1, 0}, crouch = true}, 1, &s)
+	testing.expect(t, abs(horizontal_speed(&b) - geom.CROUCH_SPEED) < 1e-3, "crouch")
+	b = standing(&s, 0.5, 0.5)
+	simulate(&b, {wish = {0, 1}, crouch = true, sprint = true}, 1, &s)
+	testing.expect(t, abs(horizontal_speed(&b) - geom.CROUCH_SPEED) < 1e-3, "crouch beats sprint")
+}
+
+@(test)
+eye_lowers_and_rises_smoothly :: proc(t: ^testing.T) {
+	eye := f64(geom.EYE_HEIGHT)
+	steps := 0
+	for ; eye != geom.CROUCH_EYE_HEIGHT; steps += 1 {
+		next := geom.eye_height_step(eye, true, geom.PHYSICS_DT)
+		testing.expect(t, next < eye && next >= geom.CROUCH_EYE_HEIGHT, "moves down, never past the target")
+		testing.expect(t, eye - next <= geom.EYE_HEIGHT_RATE * geom.PHYSICS_DT + 1e-12, "no jumps")
+		eye = next
+		if steps > 100 {
+			break
+		}
+	}
+	testing.expectf(t, steps >= 6 && steps <= 7, "crouched in %d steps (~0.1 s)", steps)
+	testing.expect_value(t, geom.eye_height_step(eye, true, geom.PHYSICS_DT), geom.CROUCH_EYE_HEIGHT)
+	for _ in 0 ..< 7 {
+		eye = geom.eye_height_step(eye, false, geom.PHYSICS_DT)
+	}
+	testing.expect_value(t, eye, geom.EYE_HEIGHT)
+}
+
+// A 3×3 platform of blocks at Y = top - 1, cells x0..x0+2, z0..z0+2.
+platform :: proc(cells: ^[dynamic][3]i32, x0, z0, top: i32) {
+	for x in x0 ..< x0 + 3 {
+		for z in z0 ..< z0 + 3 {
+			append(cells, [3]i32{x, top - 1, z})
+		}
+	}
+}
+
+@(test)
+crouching_stops_at_every_edge :: proc(t: ^testing.T) {
+	// A 1-block-high 3×3 platform on the floor: even a 1-block drop is an edge.
+	for origin in ([2][2]f64{{0, 0}, {1_000_000, -1_000_000}}) {
+		x0, z0 := i32(origin.x), i32(origin.y)
+		cells: [dynamic][3]i32
+		defer delete(cells)
+		platform(&cells, x0, z0, 1)
+		s := Scene{floor = 0, cells = cells[:]}
+		hang :: 0.3 - geom.COLLISION_SKIN // max overhang of the 0.6-wide box
+		for dir in ([8][2]f64{{1, 0}, {-1, 0}, {0, 1}, {0, -1}, {1, 1}, {-1, 1}, {1, -1}, {-1, -1}}) {
+			b := geom.Body{position = {origin.x + 1.5, 1 + geom.COLLISION_SKIN, origin.y + 1.5}, on_ground = true}
+			simulate(&b, {wish = dir, crouch = true}, 3, &s)
+			testing.expectf(t, b.on_ground && b.position.y == 1 + geom.COLLISION_SKIN, "%v: still on the platform: %v", dir, b.position)
+			// Each pushed axis ends exactly at its maximum overhang; the
+			// other stays at the center.
+			for axis in 0 ..< 2 {
+				center := origin[axis] + 1.5
+				want := center if dir[axis] == 0 else center + dir[axis] * (1.5 + hang)
+				got := b.position[axis * 2]
+				testing.expectf(t, abs(got - want) < 1e-6, "%v axis %d: at %v, want %v", dir, axis, got, want)
+			}
+		}
+	}
+}
+
+@(test)
+walking_or_jumping_still_leaves_the_edge :: proc(t: ^testing.T) {
+	cells: [dynamic][3]i32
+	defer delete(cells)
+	platform(&cells, 0, 0, 1)
+	s := Scene{floor = 0, cells = cells[:]}
+	b := geom.Body{position = {1.5, 1 + geom.COLLISION_SKIN, 1.5}, on_ground = true}
+	simulate(&b, {wish = {1, 0}}, 2, &s)
+	testing.expectf(t, b.position.x > 4 && b.position.y < 1, "walked off: %v", b.position)
+
+	// Crouch-jumping off: no edge protection in the air.
+	b = geom.Body{position = {1.5, 1 + geom.COLLISION_SKIN, 1.5}, on_ground = true}
+	simulate(&b, {wish = {1, 0}, crouch = true}, 2, &s) // to the edge
+	geom.body_step(&b, {wish = {1, 0}, crouch = true, jump = true}, geom.PHYSICS_DT, &s, scene_solid)
+	simulate(&b, {wish = {1, 0}, crouch = true}, 2, &s)
+	testing.expectf(t, b.position.x > 3.3 && b.position.y < 1, "jumped off: %v", b.position)
+}
+
+@(test)
+crouching_slides_along_an_edge :: proc(t: ^testing.T) {
+	// A 1-wide walkway along z; pushing diagonally off its +x side keeps
+	// the z motion.
+	cells: [dynamic][3]i32
+	defer delete(cells)
+	for z in i32(-5) ..= 20 {
+		append(&cells, [3]i32{0, 9, z})
+	}
+	s := Scene{floor = -100, cells = cells[:]}
+	b := geom.Body{position = {0.5, 10 + geom.COLLISION_SKIN, 0.5}, on_ground = true}
+	simulate(&b, {wish = {1, 1}, crouch = true}, 2, &s)
+	testing.expect(t, b.on_ground)
+	testing.expect(t, abs(b.position.x - (1.3 - geom.COLLISION_SKIN)) < 1e-9, "x held at the edge")
+	testing.expectf(t, b.position.z > 0.5 + 1.5, "slid along z: %v", b.position.z)
+}
+
+@(test)
+crouching_never_falls_off_random_platforms :: proc(t: ^testing.T) {
+	// Property: crouch-walking in random directions over a sparse random
+	// layout of blocks (with a deep pit below) never leaves the blocks: the
+	// feet stay at the same height and something solid stays under the box.
+	rng: u64 = 0x9e3779b97f4a7c15
+	next :: proc(r: ^u64) -> u64 {
+		r^ ~= r^ << 13
+		r^ ~= r^ >> 7
+		r^ ~= r^ << 17
+		return r^
+	}
+	for trial in 0 ..< 20 {
+		cells: [dynamic][3]i32
+		defer delete(cells)
+		append(&cells, [3]i32{0, 9, 0})
+		for x in i32(-4) ..= 4 {
+			for z in i32(-4) ..= 4 {
+				if next(&rng) % 100 < 45 {
+					append(&cells, [3]i32{x, 9, z})
+				}
+			}
+		}
+		s := Scene{floor = -100, cells = cells[:]}
+		b := geom.Body{position = {0.5, 10 + geom.COLLISION_SKIN, 0.5}, on_ground = true}
+		for _ in 0 ..< 40 {
+			angle := f64(next(&rng) % 3600) / 10 * math.RAD_PER_DEG
+			sprint := next(&rng) % 2 == 0
+			for _ in 0 ..< 30 {
+				geom.body_step(&b, {wish = {math.cos(angle), math.sin(angle)}, crouch = true, sprint = sprint}, geom.PHYSICS_DT, &s, scene_solid)
+				box := geom.body_box(b.position)
+				under := geom.AABB{{box.min.x, 9.5, box.min.z}, {box.max.x, 9.9, box.max.z}}
+				if b.position.y != 10 + geom.COLLISION_SKIN || !geom.aabb_overlaps_solid(under, &s, scene_solid) {
+					testing.expectf(t, false, "trial %d: fell or unsupported at %v", trial, b.position)
+					return
+				}
+			}
+		}
+	}
+}
+
+@(test)
+edge_clamp_follows_runs_of_support :: proc(t: ^testing.T) {
+	// Blocks in row z = 0 at x = 0..2 and x = 4 (a 1-column gap at x = 3);
+	// box 0.6 wide, feet a skin above their tops.
+	s := Scene{floor = -100, cells = {{0, 0, 0}, {1, 0, 0}, {2, 0, 0}, {4, 0, 0}}}
+	box := geom.body_box({1.5, 1 + geom.COLLISION_SKIN, 0.5})
+	got := geom.edge_clamp(box, 0, 5, &s, scene_solid)
+	testing.expectf(t, abs(1.5 + got - (3.3 - geom.COLLISION_SKIN)) < 1e-9, "+x across 2 columns, stops before the gap: %v", got)
+	got = geom.edge_clamp(box, 0, -5, &s, scene_solid)
+	testing.expectf(t, abs(1.5 + got - (-0.3 + geom.COLLISION_SKIN)) < 1e-9, "-x across 2 columns: %v", got)
+	testing.expect_value(t, geom.edge_clamp(box, 0, 0.2, &s, scene_solid), 0.2) // short moves are untouched
+	got = geom.edge_clamp(box, 2, 5, &s, scene_solid)
+	testing.expectf(t, abs(got - (0.8 - geom.COLLISION_SKIN)) < 1e-9, "z: one row: %v", got)
+	// Not supported to begin with (over the gap): no clamp.
+	gap := geom.body_box({3.5, 1 + geom.COLLISION_SKIN, 0.5})
+	testing.expect_value(t, geom.edge_clamp(gap, 0, 5, &s, scene_solid), 5)
+}
+
+@(test)
+edge_guard_only_applies_on_the_ground :: proc(t: ^testing.T) {
+	cells: [dynamic][3]i32
+	defer delete(cells)
+	platform(&cells, 0, 0, 1)
+	s := Scene{floor = -100, cells = cells[:]}
+	at_edge := geom.body_box({3.3 - geom.COLLISION_SKIN, 1 + geom.COLLISION_SKIN, 1.5})
+	moved, _ := geom.move_aabb(at_edge, {0.1, -0.001, 0}, &s, scene_solid, keep_support = true)
+	testing.expect_value(t, moved.x, 0) // on the ground: held
+	moved, _ = geom.move_aabb(at_edge, {0.1, 0.1, 0}, &s, scene_solid, keep_support = true)
+	testing.expect_value(t, moved.x, 0.1) // jumping: free
+	hovering := geom.body_box({3.3 - geom.COLLISION_SKIN, 1.2, 1.5})
+	moved, _ = geom.move_aabb(hovering, {0.1, -0.05, 0}, &s, scene_solid, keep_support = true)
+	testing.expect_value(t, moved.x, 0.1) // falling, not landed: free
+}

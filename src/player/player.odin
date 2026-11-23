@@ -16,6 +16,8 @@ Player :: struct {
 	prev_feet:   [3]f64, // feet before the last physics step, for interpolation
 	accumulator: f64, // geom.fixed_steps state
 	alpha:       f64, // interpolation fraction between prev_feet and body.position
+	eye_height:  f64, // above the feet; lower while crouching (geom.eye_height_step)
+	prev_eye_height: f64, // before the last physics step, for interpolation
 	yaw:         f32, // degrees, see geom/look.odin
 	pitch:       f32, // degrees, clamped by geom.clamp_pitch
 	mode:        Move_Mode,
@@ -32,14 +34,23 @@ UNSTUCK_SEARCH :: 128
 // heights come from the seed alone.
 player_spawn :: proc(seed: i64, x, z: i32, yaw, pitch: f32) -> Player {
 	feet := [3]f64{f64(x) + 0.5, f64(world.terrain_height(seed, x, z) + 1) + geom.COLLISION_SKIN, f64(z) + 0.5}
-	return {body = {position = feet}, prev_feet = feet, yaw = yaw, pitch = pitch, mode = .Walk}
+	return {
+		body = {position = feet},
+		prev_feet = feet,
+		eye_height = geom.EYE_HEIGHT,
+		prev_eye_height = geom.EYE_HEIGHT,
+		yaw = yaw,
+		pitch = pitch,
+		mode = .Walk,
+	}
 }
 
 // The eye, interpolated between the last two physics states (smooth at any
 // frame rate, though physics runs at 60 Hz).
 eye_position :: proc(p: ^Player) -> [3]f32 {
 	feet := p.prev_feet + (p.body.position - p.prev_feet) * p.alpha
-	return {f32(feet.x), f32(feet.y + geom.EYE_HEIGHT), f32(feet.z)}
+	eye := p.prev_eye_height + (p.eye_height - p.prev_eye_height) * p.alpha
+	return {f32(feet.x), f32(feet.y + eye), f32(feet.z)}
 }
 
 // The player's collision box (placement keeps it clear).
@@ -70,6 +81,8 @@ set_mode :: proc(p: ^Player, w: ^world.World, mode: Move_Mode) {
 	p.body.velocity = {}
 	p.body.on_ground = false
 	p.accumulator = 0
+	p.eye_height = geom.EYE_HEIGHT // stand up (fly mode has no crouch)
+	p.prev_eye_height = geom.EYE_HEIGHT
 	if mode == .Walk {
 		if lift, ok := geom.find_free_lift(player_box(p), UNSTUCK_SEARCH, w, world.world_blocks_movement); ok {
 			p.body.position.y += lift
