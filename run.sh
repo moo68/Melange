@@ -52,6 +52,7 @@ case "$MODE" in
     check)
         odin check src "${COMMON[@]}" "${RAYLIB[@]}"
         odin check src -define:PROFILE=true "${COMMON[@]}" "${RAYLIB[@]}"
+        odin check tools/terrainviz "${COMMON[@]}" "${RAYLIB[@]}"
         exit 0
         ;;
     test)

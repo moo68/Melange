@@ -1,7 +1,9 @@
 package geom
 
-import "core:math"
-import "core:math/linalg"
+// @(require): only used inside parametric procs, which builds that never
+// instantiate them (tools/terrainviz) would otherwise flag as unused imports.
+@(require) import "core:math"
+@(require) import "core:math/linalg"
 
 Ray_Hit :: struct {
 	block:  [3]i32, // the solid block hit

@@ -1,7 +1,9 @@
 package geom
 
-import "core:math"
-import "core:math/linalg"
+// @(require): only used inside parametric procs, which builds that never
+// instantiate them (tools/terrainviz) would otherwise flag as unused imports.
+@(require) import "core:math"
+@(require) import "core:math/linalg"
 
 // Walking physics for an upright box (the player). Pure: input is plain
 // values, the world is an is_solid callback. Numbers are Minecraft's.
