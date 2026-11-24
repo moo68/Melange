@@ -36,6 +36,9 @@ World_Info :: struct {
 	seed:        i64,
 	created:     i64, // unix seconds
 	last_played: i64, // unix seconds, updated by save_world
+	// World time (world.World.time): seconds of play since 7:00 on day 1.
+	// Missing in older saves = 0 (day 1, 7:00).
+	time:        f64,
 	player:      Player_State,
 }
 

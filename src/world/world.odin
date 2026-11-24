@@ -8,6 +8,7 @@ import "core:mem"
 World :: struct {
 	regions:   map[[3]i32]^Region,
 	seed:      i64, // terrain generation seed
+	time:      f64, // seconds of play since 7:00 on day 1 (daytime.odin); saved
 	// Runtime block changes by chunk coord (edit_log.odin); re-applied when
 	// a chunk is regenerated.
 	edits:      map[[3]i32][dynamic]Block_Edit,

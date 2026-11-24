@@ -9,6 +9,7 @@ flat in vec2 fragTile;         // atlas tile (column, row)
 in vec4 fragColor;
 in vec3 fragWorldPos;
 in float fragSkyLight; // 0..15, interpolated between the face's corners
+in float fragBlockLight; // 0..15 (torches, roadmap 4; 0 for now)
 
 uniform sampler2D texture0; // atlas (raylib binds the material's albedo map here)
 
@@ -20,6 +21,9 @@ uniform float fogStart; // horizontal distance where fog begins
 uniform float fogEnd;   // distance where it's fully opaque
 uniform vec3 fogTint;   // multiplied into every texel (white above water)
 uniform int fogSpherical; // 1: 3D distance (under water), 0: horizontal
+// Day/night: multiplies sky light's brightness (1 by day, world.NIGHT_DAYLIGHT
+// at night). Block light isn't scaled, so torches stay bright at night.
+uniform float daylight;
 
 out vec4 finalColor;
 
@@ -50,7 +54,8 @@ void main() {
     if (texel_color.a < 0.5) discard;
 #endif
     vec3 albedo = texel_color.rgb;
-    vec3 color = albedo * fragColor.rgb * light_brightness(fragSkyLight) * fogTint;
+    float light = max(light_brightness(fragSkyLight) * daylight, light_brightness(fragBlockLight));
+    vec3 color = albedo * fragColor.rgb * light * fogTint;
 
     // Above water: horizontal distance, matching the streaming shape (a
     // circle around the camera), so the fog wall lines up with where chunks

@@ -3,7 +3,8 @@ package world
 // Which fog the chunk shader uses: pure (no raylib) so it's testable; the
 // renderer turns it into uniforms (render.renderer_set_fog).
 
-// The sky (and clear color) above water; render.SKY_COLOR is the same.
+// The daytime sky (and clear color) above water; render.SKY_COLOR is the
+// same (title screen). The sky's color over a day: sky_at (daytime.odin).
 SKY_COLOR :: [3]u8{135, 190, 235}
 
 // Under water: the water tile's mean color (45, 98, 199) at 60% brightness,
@@ -26,15 +27,22 @@ Fog :: struct {
 	// seabed fogs it too); false: horizontal distance, matching the
 	// streaming circle.
 	spherical: bool,
+	// Multiplies sky light's brightness (day/night, Sky_State.daylight).
+	// Not fog, but sent with it: it's per-frame shading state too.
+	daylight:  f32,
 }
 
-// The fog for a camera under water or not, with streaming config `cfg`.
-// Above water it's fully fogged just before chunks can be missing, so the
-// world's edge and chunks popping in are never visible.
-fog_for :: proc(cfg: Stream_Config, underwater: bool) -> Fog {
+// The fog for a camera under water or not, with streaming config `cfg`,
+// under sky `sky` (its color above water; under water the water fog color
+// darkens with the daylight). Above water it's fully fogged just before
+// chunks can be missing, so the world's edge and chunks popping in are
+// never visible.
+fog_for :: proc(cfg: Stream_Config, underwater: bool, sky: Sky_State) -> Fog {
 	meshed := stream_meshed_distance(cfg)
 	if underwater {
-		return {color = WATER_FOG_COLOR, tint = WATER_TINT, start = 0, end = min(WATER_FOG_END, meshed), spherical = true}
+		c := WATER_FOG_COLOR
+		color := [3]u8{u8(f32(c.r) * sky.daylight), u8(f32(c.g) * sky.daylight), u8(f32(c.b) * sky.daylight)}
+		return {color = color, tint = WATER_TINT, start = 0, end = min(WATER_FOG_END, meshed), spherical = true, daylight = sky.daylight}
 	}
-	return {color = SKY_COLOR, tint = {1, 1, 1}, start = meshed * 0.55, end = meshed}
+	return {color = sky.color, tint = {1, 1, 1}, start = meshed * 0.55, end = meshed, daylight = sky.daylight}
 }

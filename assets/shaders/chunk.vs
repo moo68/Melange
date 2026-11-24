@@ -27,6 +27,7 @@ flat out vec2 fragTile;         // atlas tile (column, row)
 out vec4 fragColor;
 out vec3 fragWorldPos;
 out float fragSkyLight;         // smooth sky light level, 0..15 (interpolated)
+out float fragBlockLight;       // smooth block light level, 0..15
 
 void main() {
     uvec4 w = uvec4(vertexPosition);
@@ -39,6 +40,7 @@ void main() {
     float shade = shadeTable[int(face * 4u + ao)];
     fragColor = vec4(shade, shade, shade, 1.0);
     fragSkyLight = float((w.w >> 8) & 63u) / 4.0;
+    fragBlockLight = float(((w.z >> 12) & 15u) | (((w.w >> 14) & 3u) << 4)) / 4.0;
     vec3 world = chunkOrigin + local;
     fragWorldPos = world;
     gl_Position = mvp * vec4(world, 1.0);

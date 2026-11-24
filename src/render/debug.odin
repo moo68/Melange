@@ -25,7 +25,8 @@ draw_debug_overlay :: proc(r: ^Renderer, w: ^world.World, s: ^world.Streamer, ca
 	}
 	p := camera.position
 	line(&o, 10, "FPS %d", rl.GetFPS())
-	line(&o, 32, "pos %.1f %.1f %.1f  seed %d", p.x, p.y, p.z, w.seed)
+	hours := world.clock_hours(w.time)
+	line(&o, 32, "pos %.1f %.1f %.1f  seed %d  day %d %02d:%02d (F4 +1 h)", p.x, p.y, p.z, w.seed, world.day_number(w.time), int(hours), int(hours * 60) % 60)
 	line(&o, 54, "chunks %d loaded, %d meshed; meshes %.1f MB GPU (%d vertices)", world.world_loaded_chunk_count(w), len(r.meshes), f64(r.gpu_bytes) / 1e6, r.stats.vertices)
 	line(&o, 76, "draw calls %d, culled %d, faces %d", r.stats.draw_calls, r.stats.culled, r.stats.faces_drawn)
 	line(&o, 98, "mesh: %d in %.2f ms, %d pending", r.stats.remeshed, ms(r.stats.mesh_time), r.stats.dirty_pending)

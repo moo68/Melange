@@ -36,6 +36,9 @@ Game :: struct {
 	target:              geom.Ray_Hit,
 	has_target:          bool,
 	underwater:          bool, // camera eye in water: underwater fog (world.fog_for)
+	// --frames runs: world time stands still, so profiles and screenshots
+	// repeat exactly (frame-time jitter would shift the sky color).
+	freeze_time:         bool,
 }
 
 // Opens the world `req` (see session_open). On failure returns why (also
@@ -68,6 +71,11 @@ game_set_render_distance :: proc(g: ^Game, chunks: int) {
 	stream := g.s.config
 	stream.radius = i32(chunks)
 	world.streamer_set_config(&g.s, stream) // game_draw picks up the new fog distance
+}
+
+// Sets the clock to `hour` (0..24) in the current day (--time).
+game_set_clock :: proc(g: ^Game, hour: f64) {
+	g.w.time = world.time_at_hour(g.w.time, hour)
 }
 
 // Saves and frees the world, and drops its meshes from the renderer.
@@ -111,6 +119,12 @@ game_update :: proc(g: ^Game, r: ^render.Renderer, cfg: settings.Settings) -> bo
 	if rl.IsKeyPressed(.F2) {
 		g.cull_frozen = !g.cull_frozen
 	}
+	if g.debug && rl.IsKeyPressed(.F4) {
+		g.w.time += world.SECONDS_PER_HOUR // skip ahead an hour
+	}
+	if !g.freeze_time {
+		world.world_advance_time(&g.w, f64(rl.GetFrameTime()))
+	}
 	if !g.cull_frozen {
 		g.frustum = render.camera_frustum(g.camera)
 	}
@@ -150,8 +164,11 @@ camera_underwater :: proc(g: ^Game) -> bool {
 // EndDrawing), clearing the background to the fog color first. `hud` =
 // crosshair and debug overlay (off while paused).
 game_draw :: proc(g: ^Game, r: ^render.Renderer, hud: bool) {
-	render.renderer_set_fog(r, world.fog_for(g.s.config, g.underwater))
+	render.renderer_set_fog(r, world.fog_for(g.s.config, g.underwater, world.sky_at(g.w.time)))
 	rl.ClearBackground(render.renderer_clear_color(r))
+	if !g.underwater {
+		render.renderer_draw_sky(r, g.camera, g.w.time) // under water: only the water fog
+	}
 	rl.BeginMode3D(g.camera)
 	if g.wireframe {
 		rlgl.EnableWireMode()

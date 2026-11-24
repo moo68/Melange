@@ -93,6 +93,10 @@ main :: proc() {
 			return
 		}
 		game.no_mouse_look = opts.screenshot != ""
+		game.freeze_time = opts.frames > 0
+		if opts.time_set {
+			game_set_clock(&game, opts.time_hour)
+		}
 		has_game = true
 		screen = .Playing
 	}

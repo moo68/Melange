@@ -17,6 +17,10 @@ Options :: struct {
 	// mouse look off, so runs with the same seed give the same picture
 	// (for before/after pixel diffs of rendering changes).
 	screenshot: string,
+	// --time H: set the clock to hour H (0..24, e.g. 19.8 = mid-sunset)
+	// in the current day.
+	time_hour:  f64,
+	time_set:   bool,
 }
 
 // Parses command-line options. Returns ok = false (after printing why) on bad input.
@@ -61,6 +65,19 @@ parse_args :: proc() -> (opts: Options, ok: bool) {
 				return opts, false
 			}
 			opts.frames = frames
+		case "--time":
+			if i + 1 >= len(args) {
+				fmt.eprintln("--time needs an hour (0-24)")
+				return opts, false
+			}
+			i += 1
+			hour, parsed := strconv.parse_f64(args[i])
+			if !parsed || !(hour >= 0 && hour <= 24) {
+				fmt.eprintfln("--time: '%s' is not an hour from 0 to 24", args[i])
+				return opts, false
+			}
+			opts.time_hour = hour
+			opts.time_set = true
 		case "--screenshot":
 			if i + 1 >= len(args) {
 				fmt.eprintln("--screenshot needs a path")
@@ -69,7 +86,7 @@ parse_args :: proc() -> (opts: Options, ok: bool) {
 			i += 1
 			opts.screenshot = args[i]
 		case:
-			fmt.eprintfln("unknown argument '%s' (supported: --world NAME, --seed N, --frames N, --screenshot PATH)", args[i])
+			fmt.eprintfln("unknown argument '%s' (supported: --world NAME, --seed N, --frames N, --screenshot PATH, --time H)", args[i])
 			return opts, false
 		}
 	}

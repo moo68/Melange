@@ -50,6 +50,7 @@ Pass_Shader :: struct {
 	loc_fog_end:    i32,
 	loc_fog_tint:   i32,
 	loc_fog_spherical: i32,
+	loc_daylight:      i32,
 }
 
 // Polygon offset for the translucent pass (raylib's rlgl doesn't wrap it).
@@ -92,6 +93,7 @@ Renderer :: struct {
 	// mesh.MAX_FACES faces, 147 KB).
 	quad_ebo:      u32,
 	draw_elements: Draw_Elements_Proc,
+	sky:           Sky_Pass, // sun, moon and sky gradient (sky.odin)
 	gpu_bytes:     int, // vertex buffer bytes of all chunk meshes
 	// Reused for every rebuild: no per-chunk Odin allocations once grown.
 	scratch:       mesh.Chunk_Mesh,
@@ -124,7 +126,7 @@ Stats :: struct {
 Init_Error :: enum {
 	None,
 	Atlas,  // ATLAS_PATH missing or unreadable
-	Shader, // chunk shader missing or failed to compile (raylib logs the GLSL error)
+	Shader, // chunk or sky shader missing or failed to compile (raylib logs the GLSL error)
 	GL,     // glDrawElements not found
 }
 
@@ -188,9 +190,14 @@ renderer_init :: proc(r: ^Renderer, allocator := context.allocator) -> Init_Erro
 		r.gl_offset = {}
 	}
 
+	if !sky_init(&r.sky) {
+		renderer_destroy(r)
+		return .Shader
+	}
+
 	// Effectively off until the caller sets one.
 	r.fog_sent = false
-	renderer_set_fog(r, {color = world.SKY_COLOR, tint = {1, 1, 1}, start = 0, end = 1e9})
+	renderer_set_fog(r, {color = world.SKY_COLOR, tint = {1, 1, 1}, start = 0, end = 1e9, daylight = 1})
 	return .None
 }
 
@@ -238,10 +245,12 @@ load_pass_shader :: proc(pass: mesh.Pass) -> (ps: Pass_Shader, ok: bool) {
 	ps.loc_fog_end = rl.GetShaderLocation(ps.shader, "fogEnd")
 	ps.loc_fog_tint = rl.GetShaderLocation(ps.shader, "fogTint")
 	ps.loc_fog_spherical = rl.GetShaderLocation(ps.shader, "fogSpherical")
+	ps.loc_daylight = rl.GetShaderLocation(ps.shader, "daylight")
 	return ps, true
 }
-// Sets the chunk shaders' fog (see world.Fog). Cheap to call every frame:
-// uniforms are only sent when the fog changed.
+// Sets the chunk shaders' fog and daylight (see world.Fog). Cheap to call
+// every frame: uniforms are only sent when something changed (every frame
+// during sunrise and sunset).
 renderer_set_fog :: proc(r: ^Renderer, fog: world.Fog) {
 	if r.fog_sent && r.fog == fog {
 		return
@@ -250,7 +259,9 @@ renderer_set_fog :: proc(r: ^Renderer, fog: world.Fog) {
 	color := [3]f32{f32(fog.color.r), f32(fog.color.g), f32(fog.color.b)} / 255
 	tint, start, end := fog.tint, fog.start, fog.end
 	spherical := i32(fog.spherical)
+	daylight := fog.daylight
 	for &ps in r.shaders {
+		rl.SetShaderValue(ps.shader, ps.loc_daylight, &daylight, .FLOAT)
 		rl.SetShaderValue(ps.shader, ps.loc_fog_color, &color, .VEC3)
 		rl.SetShaderValue(ps.shader, ps.loc_fog_tint, &tint, .VEC3)
 		rl.SetShaderValue(ps.shader, ps.loc_fog_start, &start, .FLOAT)
@@ -291,6 +302,7 @@ renderer_destroy :: proc(r: ^Renderer) {
 		rl.UnloadShader(ps.shader)
 	}
 	rl.UnloadTexture(r.atlas)
+	sky_destroy(&r.sky)
 	r^ = {}
 }
 

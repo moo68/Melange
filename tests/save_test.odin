@@ -226,6 +226,7 @@ world_info_round_trip :: proc(t: ^testing.T) {
 		info := save.new_world_info("w", seed, 1_795_000_000 + i64(i))
 		defer save.info_destroy(&info)
 		info.player = {feet[i % len(feet)], 359.99, -89, i % 2 == 0}
+		info.time = 0 if i == 0 else 98_765.4321 * f64(i)
 		testing.expect_value(t, save.save_world(root, &info, &w, 1_800_000_000), save.Error.None)
 		testing.expect_value(t, info.last_played, 1_800_000_000)
 
@@ -239,7 +240,25 @@ world_info_round_trip :: proc(t: ^testing.T) {
 		testing.expect_value(t, got.last_played, info.last_played)
 		// JSON floats are written with 16 decimals: exact for these magnitudes.
 		testing.expect_value(t, got.player, info.player)
+		testing.expect_value(t, got.time, info.time)
 	}
+}
+
+// Saves from before day/night have no "time": they load at 0 (day 1, 7:00).
+@(test)
+world_info_without_time_loads_at_morning :: proc(t: ^testing.T) {
+	root := test_saves_root("info-no-time")
+	defer os.remove_all(root)
+	_ = os.make_directory_all(strings.concatenate({root, "/old"}, context.temp_allocator))
+	write_file(t, strings.concatenate({root, "/old/", save.INFO_FILE}, context.temp_allocator), `{
+	"version": 1, "name": "old", "seed": 5, "created": 1, "last_played": 2,
+	"player": {"feet": [0.5, 10, 0.5], "yaw": 0, "pitch": 0, "flying": false}
+}`)
+	got, err := save.load_info(root, "old")
+	defer save.info_destroy(&got)
+	testing.expect_value(t, err, save.Error.None)
+	testing.expect_value(t, got.seed, 5)
+	testing.expect_value(t, got.time, 0)
 }
 
 @(test)

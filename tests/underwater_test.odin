@@ -47,7 +47,7 @@ point_in_fluid_in_a_world :: proc(t: ^testing.T) {
 @(test)
 fog_above_water_is_the_sky_fog :: proc(t: ^testing.T) {
 	cfg := world.DEFAULT_STREAM_CONFIG
-	f := world.fog_for(cfg, false)
+	f := world.fog_for(cfg, false, world.sky_at(world.time_at_hour(0, 12))) // midday
 	meshed := world.stream_meshed_distance(cfg)
 	testing.expect_value(t, f.color, world.SKY_COLOR)
 	testing.expect_value(t, f.tint, [3]f32{1, 1, 1})
@@ -61,7 +61,7 @@ fog_under_water_is_close_blue_and_spherical :: proc(t: ^testing.T) {
 	cfg := world.DEFAULT_STREAM_CONFIG
 	for radius in i32(4) ..= 32 {
 		cfg.radius = radius
-		f := world.fog_for(cfg, true)
+		f := world.fog_for(cfg, true, world.sky_at(world.time_at_hour(0, 12)))
 		meshed := world.stream_meshed_distance(cfg)
 		testing.expect_value(t, f.color, world.WATER_FOG_COLOR)
 		testing.expect_value(t, f.tint, world.WATER_TINT)
@@ -71,5 +71,5 @@ fog_under_water_is_close_blue_and_spherical :: proc(t: ^testing.T) {
 		testing.expectf(t, f.end == min(f32(world.WATER_FOG_END), meshed), "radius %d: end %v", radius, f.end)
 	}
 	cfg.radius = 4
-	testing.expect(t, world.fog_for(cfg, true).end < world.WATER_FOG_END, "capped at the minimum render distance")
+	testing.expect(t, world.fog_for(cfg, true, world.sky_at(0)).end < world.WATER_FOG_END, "capped at the minimum render distance")
 }

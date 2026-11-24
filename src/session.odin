@@ -76,6 +76,7 @@ session_open :: proc(req: World_Request, w: ^world.World, pl: ^player.Player, de
 		return {}, msg
 	}
 	world.world_init(w, sess.info.seed)
+	w.time = sess.info.time
 	if edits_err, decode := save.load_edits(save.SAVES_DIR, name, w); edits_err != .None {
 		session_close(&sess)
 		world.world_destroy(w)
@@ -102,6 +103,7 @@ session_save :: proc(sess: ^Session, w: ^world.World, pl: ^player.Player) -> boo
 		pitch  = pl.pitch,
 		flying = pl.mode == .Fly,
 	}
+	sess.info.time = w.time
 	sess.autosave_timer = 0
 	if err := save.save_world(save.SAVES_DIR, &sess.info, w, unix_now()); err != .None {
 		fmt.eprintfln("saving world '%s' failed: %v", sess.info.name, err)
