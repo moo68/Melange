@@ -9,6 +9,7 @@ DIRT  :: Block_ID(2)
 GRASS :: Block_ID(3)
 GLASS :: Block_ID(4)
 LEAVES :: Block_ID(5)
+WATER :: Block_ID(6)
 
 // Load-bearing: region memory comes from the OS zero-filled, so untouched
 // blocks read as 0. AIR must be 0 for that to mean "empty".
@@ -22,6 +23,7 @@ BLOCK_NAMES := [?]string {
 	GRASS = "grass",
 	GLASS = "glass",
 	LEAVES = "leaves",
+	WATER = "water",
 }
 
 block_name :: proc "contextless" (id: Block_ID) -> string {
@@ -35,6 +37,7 @@ Block_Render :: enum u8 {
 	None, // never meshed (air)
 	Opaque, // fully opaque texture
 	Cutout, // texels are either opaque or fully clear (glass, leaves): alpha-tested, no sorting
+	Translucent, // alpha-blended (water): drawn last, back to front, no depth writes
 }
 
 Block_Flag :: enum u8 {
@@ -44,6 +47,11 @@ Block_Flag :: enum u8 {
 	// Faces between two of this block are culled (glass: a wall reads as one
 	// pane). Without it they're drawn (leaves: trees look full).
 	Cull_Same,
+	// Placing a block into this one replaces it (water).
+	Replaceable,
+	// Its top is lowered to FLUID_SURFACE unless the same block is above it
+	// (Minecraft's still water). See face_extent.
+	Fluid,
 }
 Block_Flags :: bit_set[Block_Flag; u8]
 
@@ -62,6 +70,7 @@ BLOCK_PROPS := [?]Block_Props {
 	GRASS  = OPAQUE_CUBE,
 	GLASS  = {.Cutout, {.Solid, .Cull_Same}},
 	LEAVES = {.Cutout, {.Casts_AO, .Solid}},
+	WATER  = {.Translucent, {.Cull_Same, .Replaceable, .Fluid}},
 }
 
 // Unknown IDs (e.g. from a newer save) are shown as opaque cubes with the
@@ -84,8 +93,8 @@ block_is_solid :: #force_inline proc "contextless" (id: Block_ID) -> bool {
 	return .Solid in block_flags(id)
 }
 
-// Whether a face of `id` toward `neighbor` is visible (emitted when meshing).
-// Air has no faces.
+// Whether a face of `id` toward `neighbor` is visible (emitted when meshing),
+// ignoring fluid heights (see face_extent). Air has no faces.
 face_visible :: #force_inline proc "contextless" (id, neighbor: Block_ID) -> bool {
 	p := block_props(id)
 	if p.render == .None {
@@ -95,6 +104,57 @@ face_visible :: #force_inline proc "contextless" (id, neighbor: Block_ID) -> boo
 		return false
 	}
 	return !(neighbor == id && .Cull_Same in p.flags)
+}
+
+// Height of a fluid's lowered top surface: 14/16 (Minecraft's still water is ~0.89).
+FLUID_SURFACE :: f32(0.875)
+
+// Height of the top of `id` with `above` on top of it: FLUID_SURFACE for a
+// fluid without the same fluid above, else 1.
+block_top :: #force_inline proc "contextless" (id, above: Block_ID) -> f32 {
+	if .Fluid in block_flags(id) && above != id {
+		return FLUID_SURFACE
+	}
+	return 1
+}
+
+// The visible part of face `face` of block `id`, whose neighbor across that
+// face is `neighbor`: its vertical extent [lo, hi] within the block (side
+// faces; top and bottom faces sit at hi and lo). `above` is the block above
+// `id`, `neighbor_above` the block above `neighbor` (fluid heights).
+//   - Not fluids: face_visible, full height.
+//   - A lowered fluid top is always visible: there's a gap under whatever is
+//     above it, even an opaque block.
+//   - A fluid side toward the same fluid shows only where it's taller than
+//     the neighbor (a full block next to a lowered one: the strip
+//     FLUID_SURFACE..1), so stacked water never shows a gap.
+//   - Fluid sides and bottoms against a see-through Solid block (glass,
+//     leaves) are drawn in that block's face plane, so an aquarium shows its
+//     water. The two coplanar faces would z-fight (fluids are drawn
+//     double-sided); the renderer draws the translucent pass with a polygon
+//     offset so the other block's face always wins (render.renderer_draw).
+//     Hiding the fluid face made aquarium water invisible; pushing it into
+//     the fluid left visible gaps around submerged glass.
+face_extent :: proc "contextless" (id, neighbor, above, neighbor_above: Block_ID, face: Face) -> (lo, hi: f32, visible: bool) {
+	if .Fluid not_in block_flags(id) {
+		return 0, 1, face_visible(id, neighbor)
+	}
+	top := block_top(id, above)
+	switch face {
+	case .Pos_Y:
+		return top, top, top < 1 || face_visible(id, neighbor)
+	case .Neg_Y:
+		return 0, 0, face_visible(id, neighbor)
+	case .Pos_X, .Neg_X, .Pos_Z, .Neg_Z:
+	}
+	if .Opaque in block_flags(neighbor) {
+		return 0, top, false
+	}
+	if neighbor == id && .Cull_Same in block_flags(id) {
+		n_top := block_top(neighbor, neighbor_above)
+		return n_top, top, n_top < top
+	}
+	return 0, top, true
 }
 
 // ---- Textures -----------------------------------------------------------------
@@ -109,6 +169,7 @@ TILE_GRASS_TOP  :: Tile(2)
 TILE_STONE      :: Tile(3)
 TILE_GLASS      :: Tile(4)
 TILE_LEAVES     :: Tile(5)
+TILE_WATER      :: Tile(6)
 TILE_UNDEFINED  :: Tile(255) // magenta/black checker: missing texture
 
 // Atlas tile for each face of each block. AIR is never meshed.
@@ -119,6 +180,7 @@ BLOCK_TILES := [?][Face]Tile {
 	DIRT  = {.Pos_X ..= .Neg_Z = TILE_DIRT},
 	GLASS  = {.Pos_X ..= .Neg_Z = TILE_GLASS},
 	LEAVES = {.Pos_X ..= .Neg_Z = TILE_LEAVES},
+	WATER  = {.Pos_X ..= .Neg_Z = TILE_WATER},
 	GRASS = {
 		.Pos_Y = TILE_GRASS_TOP,
 		.Neg_Y = TILE_DIRT,

@@ -1,5 +1,6 @@
 package render
 
+import "core:fmt"
 import "core:mem"
 import "core:os"
 import "core:strings"
@@ -28,15 +29,33 @@ SKY_COLOR :: rl.Color{135, 190, 235, 255}
 // (vertexCount 0, never uploaded).
 Chunk_Meshes :: [mesh.Pass]rl.Mesh
 
-// The chunk shader for one pass. The cutout variant is chunk.fs compiled
-// with `#define CUTOUT` (alpha test with discard); the opaque one has no
-// discard, so the GPU keeps early depth testing for most of the world.
+// The chunk shader for one pass: chunk.fs compiled with `#define CUTOUT`
+// (alpha test with discard) or `#define TRANSLUCENT` (outputs the texel's
+// alpha for blending); the opaque one has neither, so the GPU keeps early
+// depth testing for most of the world.
 Pass_Shader :: struct {
 	shader:         rl.Shader,
 	loc_camera_pos: i32,
 	loc_fog_color:  i32,
 	loc_fog_start:  i32,
 	loc_fog_end:    i32,
+}
+
+// Polygon offset for the translucent pass (raylib's rlgl doesn't wrap it).
+// Water faces against glass/leaves lie in those blocks' face plane (see
+// world.face_extent); without a bias the two z-fight, since water is drawn
+// double-sided. A positive offset makes water lose every depth tie, so the
+// other block's face always wins in that plane; away from it the slope-scaled
+// bias is far too small to matter. GL 1.1 functions, looked up once through
+// raylib's own loader (rlgl.GetProcAddress) after the window exists.
+GL_POLYGON_OFFSET_FILL :: 0x8037
+POLYGON_OFFSET_FACTOR :: 1 // × the surface's depth slope (grazing angles)
+POLYGON_OFFSET_UNITS :: 1 // × the smallest resolvable depth step
+
+Polygon_Offset_Procs :: struct {
+	enable:  proc "c" (cap: u32),
+	disable: proc "c" (cap: u32),
+	offset:  proc "c" (factor, units: f32),
 }
 
 // GPU-side state for all chunk meshes. Owns raylib resources, so it must be
@@ -53,8 +72,13 @@ Renderer :: struct {
 	default_shader: rl.Shader,
 	// Reused for every rebuild: no per-chunk Odin allocations once grown.
 	scratch:       mesh.Chunk_Mesh,
-	// Visible chunks with a cutout mesh, collected during the opaque pass.
-	cutout_visible: [dynamic][3]i32,
+	// nil procs if the GL functions weren't found: water then just z-fights
+	// with glass/leaves (a warning is printed).
+	gl_offset:     Polygon_Offset_Procs,
+	// Visible chunks with a cutout / translucent mesh, collected during the
+	// opaque pass.
+	cutout_visible:      [dynamic][3]i32,
+	translucent_visible: [dynamic]world.Chunk_Distance,
 	dirty:         [dynamic][3]i32,
 	order:         [dynamic]world.Queued_Chunk, // dirty chunks, nearest first
 	remesh_budget: int,
@@ -90,7 +114,7 @@ renderer_init :: proc(r: ^Renderer, allocator := context.allocator) -> Init_Erro
 	for pass in mesh.Pass {
 		r.shaders[pass], ok[pass] = load_pass_shader(pass)
 	}
-	if !ok[.Opaque] || !ok[.Cutout] {
+	if !ok[.Opaque] || !ok[.Cutout] || !ok[.Translucent] {
 		for pass in mesh.Pass {
 			if ok[pass] {
 				rl.UnloadShader(r.shaders[pass].shader)
@@ -103,6 +127,7 @@ renderer_init :: proc(r: ^Renderer, allocator := context.allocator) -> Init_Erro
 
 	r.meshes = make(map[[3]i32]Chunk_Meshes, allocator)
 	r.cutout_visible = make([dynamic][3]i32, allocator)
+	r.translucent_visible = make([dynamic]world.Chunk_Distance, allocator)
 	r.dirty = make([dynamic][3]i32, allocator)
 	r.order = make([dynamic]world.Queued_Chunk, allocator)
 	r.material = rl.LoadMaterialDefault()
@@ -110,6 +135,15 @@ renderer_init :: proc(r: ^Renderer, allocator := context.allocator) -> Init_Erro
 	r.material.shader = r.shaders[.Opaque].shader
 	r.material.maps[rl.MaterialMapIndex.ALBEDO].texture = r.atlas
 	r.remesh_budget = DEFAULT_REMESH_BUDGET
+	r.gl_offset = {
+		enable  = auto_cast rlgl.GetProcAddress("glEnable"),
+		disable = auto_cast rlgl.GetProcAddress("glDisable"),
+		offset  = auto_cast rlgl.GetProcAddress("glPolygonOffset"),
+	}
+	if r.gl_offset.enable == nil || r.gl_offset.disable == nil || r.gl_offset.offset == nil {
+		fmt.eprintln("warning: glPolygonOffset unavailable; water may flicker against glass and leaves")
+		r.gl_offset = {}
+	}
 
 	sky := [3]f32{f32(SKY_COLOR.r), f32(SKY_COLOR.g), f32(SKY_COLOR.b)} / 255
 	for &ps in r.shaders {
@@ -131,12 +165,20 @@ load_pass_shader :: proc(pass: mesh.Pass) -> (ps: Pass_Shader, ok: bool) {
 		return {}, false
 	}
 	fs := string(fs_text)
-	if pass == .Cutout {
+	define := ""
+	switch pass {
+	case .Opaque:
+	case .Cutout:
+		define = "#define CUTOUT\n"
+	case .Translucent:
+		define = "#define TRANSLUCENT\n"
+	}
+	if define != "" {
 		eol := strings.index_byte(fs, '\n')
 		if eol < 0 || !strings.has_prefix(fs, "#version") {
 			return {}, false
 		}
-		fs = strings.concatenate({fs[:eol + 1], "#define CUTOUT\n", fs[eol + 1:]}, context.temp_allocator)
+		fs = strings.concatenate({fs[:eol + 1], define, fs[eol + 1:]}, context.temp_allocator)
 	}
 	ps.shader = rl.LoadShaderFromMemory(strings.clone_to_cstring(string(vs_text), context.temp_allocator), strings.clone_to_cstring(fs, context.temp_allocator))
 	if !rl.IsShaderValid(ps.shader) || ps.shader.id == rlgl.GetShaderIdDefault() {
@@ -178,6 +220,7 @@ renderer_destroy :: proc(r: ^Renderer) {
 	delete(r.dirty)
 	delete(r.order)
 	delete(r.cutout_visible)
+	delete(r.translucent_visible)
 	mesh.chunk_mesh_destroy(&r.scratch)
 	// UnloadMaterial also unloads a non-default shader and any non-default
 	// textures in its maps, so put the defaults back first; our shader and
@@ -259,7 +302,12 @@ unload_chunk_meshes :: proc(m: ^Chunk_Meshes) {
 // Draws every chunk mesh inside `frustum`. Call between BeginMode3D / EndMode3D.
 // The opaque pass first, then the cutout pass (alpha-tested, so it needs no
 // sorting; drawing it second lets opaque terrain behind leaves fill the depth
-// buffer first).
+// buffer first), then the translucent pass: chunks sorted back to front,
+// alpha-blended, depth-tested but not written (water behind water still
+// shows), double-sided (the surface is visible from underwater), and with a
+// polygon offset (see GL_POLYGON_OFFSET_FILL) so it never z-fights. Faces
+// within one chunk aren't sorted; with one uniform water color that's
+// invisible.
 renderer_draw :: proc(r: ^Renderer, frustum: ^geom.Frustum, camera_pos: [3]f32) {
 	prof.scope("renderer_draw")
 	camera_pos := camera_pos
@@ -271,6 +319,7 @@ renderer_draw :: proc(r: ^Renderer, frustum: ^geom.Frustum, camera_pos: [3]f32) 
 	r.stats.culled = 0
 	r.stats.faces_drawn = 0
 	clear(&r.cutout_visible)
+	clear(&r.translucent_visible)
 	r.material.shader = r.shaders[.Opaque].shader
 	for coord, &m in r.meshes {
 		o := world.chunk_origin(coord)
@@ -283,11 +332,35 @@ renderer_draw :: proc(r: ^Renderer, frustum: ^geom.Frustum, camera_pos: [3]f32) 
 		if m[.Cutout].vertexCount > 0 {
 			append(&r.cutout_visible, coord)
 		}
+		if m[.Translucent].vertexCount > 0 {
+			append(&r.translucent_visible, world.Chunk_Distance{coord, world.chunk_center_dist2(coord, camera_pos)})
+		}
 	}
 	r.material.shader = r.shaders[.Cutout].shader
 	for coord in r.cutout_visible {
 		m := r.meshes[coord][.Cutout]
 		draw_pass_mesh(r, &m, world.chunk_origin(coord))
+	}
+	if len(r.translucent_visible) > 0 {
+		world.sort_far_first(r.translucent_visible[:])
+		r.material.shader = r.shaders[.Translucent].shader
+		rl.BeginBlendMode(.ALPHA)
+		rlgl.DisableDepthMask()
+		rlgl.DisableBackfaceCulling()
+		if r.gl_offset.offset != nil {
+			r.gl_offset.offset(POLYGON_OFFSET_FACTOR, POLYGON_OFFSET_UNITS)
+			r.gl_offset.enable(GL_POLYGON_OFFSET_FILL)
+		}
+		for q in r.translucent_visible {
+			m := r.meshes[q.coord][.Translucent]
+			draw_pass_mesh(r, &m, world.chunk_origin(q.coord))
+		}
+		if r.gl_offset.offset != nil {
+			r.gl_offset.disable(GL_POLYGON_OFFSET_FILL)
+		}
+		rlgl.EnableBackfaceCulling()
+		rlgl.EnableDepthMask()
+		rl.EndBlendMode()
 	}
 	r.material.shader = r.shaders[.Opaque].shader
 }

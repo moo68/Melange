@@ -19,14 +19,21 @@ Mesh_Data :: struct {
 Pass :: enum u8 {
 	Opaque, // no discard: keeps early depth testing for most of the world
 	Cutout, // alpha-tested (discard), drawn after the opaque pass
+	Translucent, // alpha-blended, drawn last: chunks back to front, no depth writes
 }
 
-// One chunk's meshes, one per pass (world.Block_Render .Opaque / .Cutout).
+// One chunk's meshes, one per pass (world.Block_Render .Opaque / .Cutout / .Translucent).
 Chunk_Mesh :: [Pass]Mesh_Data
 
 // The pass a block's faces go into. Only for blocks that are meshed.
 block_pass :: #force_inline proc "contextless" (id: world.Block_ID) -> Pass {
-	return .Cutout if world.block_props(id).render == .Cutout else .Opaque
+	#partial switch world.block_props(id).render {
+	case .Cutout:
+		return .Cutout
+	case .Translucent:
+		return .Translucent
+	}
+	return .Opaque
 }
 
 // Upper bound on faces a chunk can emit: every internal block pair contributes
@@ -200,16 +207,21 @@ build_chunk_mesh_neighborhood :: proc(n: ^Neighborhood, out: ^Chunk_Mesh) {
 					continue
 				}
 				dst := &out[block_pass(id)]
-				cull_same := .Cull_Same in world.block_flags(id)
+				flags := world.block_flags(id)
+				cull_same := .Cull_Same in flags
 				pos := [3]i32{x, y, z}
 				pp := pos + 1
+				if .Fluid in flags {
+					emit_fluid_faces(dst, &pad, pos, id)
+					continue
+				}
 				for face in Face {
 					// Same rule as world.face_visible (tested to agree).
 					ni := padded_index(pp + world.FACE_NORMALS[face])
 					if .Opaque in pad.flags[ni] || (cull_same && pad.ids[ni] == id) {
 						continue // hidden by the neighbor block
 					}
-					emit_face(dst, &pad, pos, face, id)
+					emit_face(dst, &pad, pos, face, id, 0, 1)
 				}
 			}
 		}
@@ -302,17 +314,50 @@ face_ao :: proc "contextless" (pad: ^Padded, pos: [3]i32, face: Face) -> (ao: [4
 	return
 }
 
-emit_face :: proc(out: ^Mesh_Data, pad: ^Padded, pos: [3]i32, face: Face, id: world.Block_ID) {
+// A fluid block's faces (water), per world.face_extent: a lowered top, and
+// sides cut to the visible height range. Rare, so it just calls the shared
+// rule instead of an inlined copy.
+emit_fluid_faces :: proc(out: ^Mesh_Data, pad: ^Padded, pos: [3]i32, id: world.Block_ID) {
+	UP :: [3]i32{0, 1, 0}
+	pp := pos + 1
+	above := pad.ids[padded_index(pp + UP)]
+	for face in Face {
+		np := pp + world.FACE_NORMALS[face]
+		neighbor := pad.ids[padded_index(np)]
+		neighbor_above := pad.ids[padded_index(np + UP)] if np.y + 1 < P else world.AIR
+		lo, hi, visible := world.face_extent(id, neighbor, above, neighbor_above, face)
+		if visible {
+			emit_face(out, pad, pos, face, id, lo, hi)
+		}
+	}
+}
+
+// Emits one face of the block at `pos`. Corners at the bottom of the block
+// go to height `lo`, corners at the top to `hi` (0 and 1 for a full face;
+// fluids pass a lowered or partial range), and side faces' in-tile v follows
+// the height so the texture isn't squashed. Translucent blocks get no AO
+// (shore blocks would smudge the water surface).
+emit_face :: proc(out: ^Mesh_Data, pad: ^Padded, pos: [3]i32, face: Face, id: world.Block_ID, lo, hi: f32) {
 	base := u16(len(out.positions))
 	origin := linalg.array_cast(pos, f32)
 	normal := linalg.array_cast(world.FACE_NORMALS[face], f32)
 	tile := tile_coords(world.block_tile(id, face))
-	ao := face_ao(pad, pos, face)
+	ao := [4]u8{3, 3, 3, 3}
+	if world.block_props(id).render != .Translucent {
+		ao = face_ao(pad, pos, face)
+	}
+	side := face != .Pos_Y && face != .Neg_Y
 	for corner, i in FACE_CORNERS[face] {
 		b := u8(f32(FACE_SHADE[face]) * AO_BRIGHTNESS[ao[i]])
-		append(&out.positions, origin + corner)
+		c := corner
+		c.y = lo if corner.y == 0 else hi
+		uv := FACE_UVS[i]
+		if side {
+			uv.y = 1 - c.y // v = 0 at the top of the tile
+		}
+		append(&out.positions, origin + c)
 		append(&out.normals, normal)
-		append(&out.texcoords, FACE_UVS[i])
+		append(&out.texcoords, uv)
 		append(&out.tiles, tile)
 		append(&out.colors, [4]u8{b, b, b, 255})
 	}

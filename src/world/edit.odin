@@ -26,15 +26,16 @@ world_break_block :: proc(w: ^World, hit: geom.Ray_Hit) -> bool {
 	return world_set_block(w, hit.block, AIR)
 }
 
-// Places `id` in the empty cell in front of the face a ray hit. Refused
-// (returns false) if the ray started inside a block, the cell overlaps
-// `keep_clear` (the player's box), or the cell isn't loaded air.
+// Places `id` in the cell in front of the face a ray hit, if that cell is
+// air or Replaceable (water). Refused (returns false) if the ray started
+// inside a block, the cell overlaps `keep_clear` (the player's box), the
+// cell holds anything else, or it isn't loaded.
 world_place_block :: proc(w: ^World, hit: geom.Ray_Hit, id: Block_ID, keep_clear: geom.AABB) -> bool {
 	cell, ok := geom.place_cell(hit)
 	if !ok || geom.aabb_overlaps_cell(keep_clear, cell) {
 		return false
 	}
-	if current, _ := world_get_block(w, cell); current != AIR {
+	if current, _ := world_get_block(w, cell); current != AIR && .Replaceable not_in block_flags(current) {
 		return false
 	}
 	return world_set_block(w, cell, id) // refuses unloaded chunks (which read as air)

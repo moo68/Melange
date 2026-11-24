@@ -1,7 +1,8 @@
 #version 330
 
 // Chunk fragment shader: atlas texture x vertex shade, then distance fog.
-// The renderer also compiles it with `#define CUTOUT` for the cutout pass.
+// The renderer also compiles it with `#define CUTOUT` (cutout pass) and
+// `#define TRANSLUCENT` (translucent pass).
 
 centroid in vec2 fragTexCoord; // position within the tile, 0..1
 flat in vec2 fragTile;         // atlas tile (column, row)
@@ -38,6 +39,11 @@ void main() {
     float dist = length(fragWorldPos.xz - cameraPos.xz);
     float fog = smoothstep(fogStart, fogEnd, dist);
 
+#ifdef TRANSLUCENT
+    // Blended over what's behind (water): keep the texel's alpha.
+    finalColor = vec4(mix(color, fogColor, fog), texel_color.a);
+#else
     // Alpha is always 1 (cutout texels that survive the test are opaque).
     finalColor = vec4(mix(color, fogColor, fog), 1.0);
+#endif
 }

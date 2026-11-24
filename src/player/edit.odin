@@ -7,11 +7,11 @@ import rl "third_party:raylib"
 // Seconds between repeated breaks/places while a mouse button is held.
 EDIT_REPEAT :: 0.2
 
-// Blocks selectable with keys 1-5 (until there's a hotbar).
+// Blocks selectable with keys 1-6 (until there's a hotbar).
 @(rodata)
-PLACEABLE := [5]world.Block_ID{world.STONE, world.DIRT, world.GRASS, world.GLASS, world.LEAVES}
+PLACEABLE := [6]world.Block_ID{world.STONE, world.DIRT, world.GRASS, world.GLASS, world.LEAVES, world.WATER}
 @(rodata)
-PLACEABLE_KEYS := [5]rl.KeyboardKey{.ONE, .TWO, .THREE, .FOUR, .FIVE}
+PLACEABLE_KEYS := [6]rl.KeyboardKey{.ONE, .TWO, .THREE, .FOUR, .FIVE, .SIX}
 
 Edit_State :: struct {
 	selected:       world.Block_ID, // what right click places
@@ -23,7 +23,7 @@ DEFAULT_EDIT_STATE :: Edit_State {
 	selected = world.STONE,
 }
 
-// Keys 1-5 select a block; left click breaks the targeted block, right
+// Keys 1-6 select a block; left click breaks the targeted block, right
 // click places the selected one against the targeted face; both repeat
 // every EDIT_REPEAT while held. `hit`/`has_hit` = this frame's pick_block;
 // nothing is placed overlapping `keep_clear` (the player's box).
