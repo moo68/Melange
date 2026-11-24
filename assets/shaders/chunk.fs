@@ -1,6 +1,6 @@
 #version 330
 
-// Chunk fragment shader: atlas texture x vertex shade, then distance fog.
+// Chunk fragment shader: atlas texture x vertex shade x light, then distance fog.
 // The renderer also compiles it with `#define CUTOUT` (cutout pass) and
 // `#define TRANSLUCENT` (translucent pass).
 
@@ -8,6 +8,7 @@ centroid in vec2 fragTexCoord; // position within the tile, 0..1
 flat in vec2 fragTile;         // atlas tile (column, row)
 in vec4 fragColor;
 in vec3 fragWorldPos;
+in float fragSkyLight; // 0..15, interpolated between the face's corners
 
 uniform sampler2D texture0; // atlas (raylib binds the material's albedo map here)
 
@@ -22,6 +23,21 @@ uniform int fogSpherical; // 1: 3D distance (under water), 0: horizontal
 
 out vec4 finalColor;
 
+// Light level (0..15, fractional) -> brightness, like Minecraft's lightmap:
+// f / (4 - 3f) (each level ~20% dimmer near the top), half-blended toward
+// 1 - (1 - b)^4 (Minecraft's gamma 0.5, lifts the darks), never below
+// MIN_BRIGHTNESS so unlit places aren't pure black. Applied per fragment, so
+// the light level (not the brightness) is interpolated across faces.
+const float LIGHT_GAMMA = 0.5;
+const float MIN_BRIGHTNESS = 0.05;
+float light_brightness(float level) {
+    float f = clamp(level / 15.0, 0.0, 1.0);
+    float b = f / (4.0 - 3.0 * f);
+    float inv = 1.0 - b;
+    b = mix(b, 1.0 - inv * inv * inv * inv, LIGHT_GAMMA);
+    return mix(MIN_BRIGHTNESS, 1.0, b);
+}
+
 void main() {
     // Exact texel inside this face's tile: never reads a neighboring tile,
     // so every face shows exactly its 16x16 texture, edge to edge.
@@ -34,7 +50,7 @@ void main() {
     if (texel_color.a < 0.5) discard;
 #endif
     vec3 albedo = texel_color.rgb;
-    vec3 color = albedo * fragColor.rgb * fogTint;
+    vec3 color = albedo * fragColor.rgb * light_brightness(fragSkyLight) * fogTint;
 
     // Above water: horizontal distance, matching the streaming shape (a
     // circle around the camera), so the fog wall lines up with where chunks

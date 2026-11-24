@@ -60,9 +60,12 @@ Block_Flags :: bit_set[Block_Flag; u8]
 Block_Props :: struct {
 	render: Block_Render,
 	flags:  Block_Flags, // one byte, so the mesher can copy it per cell
+	// How much light fades entering this block (light.odin): 0 clear,
+	// 1 = water / leaves, MAX_LIGHT = opaque (holds no light).
+	light_filter: u8,
 }
 
-OPAQUE_CUBE :: Block_Props{.Opaque, {.Opaque, .Casts_AO, .Solid, .Cull_Same}}
+OPAQUE_CUBE :: Block_Props{.Opaque, {.Opaque, .Casts_AO, .Solid, .Cull_Same}, MAX_LIGHT}
 
 @(rodata)
 BLOCK_PROPS := [?]Block_Props {
@@ -70,9 +73,9 @@ BLOCK_PROPS := [?]Block_Props {
 	STONE  = OPAQUE_CUBE,
 	DIRT   = OPAQUE_CUBE,
 	GRASS  = OPAQUE_CUBE,
-	GLASS  = {.Cutout, {.Solid, .Cull_Same}},
-	LEAVES = {.Cutout, {.Casts_AO, .Solid}},
-	WATER  = {.Translucent, {.Cull_Same, .Replaceable, .Fluid}},
+	GLASS  = {.Cutout, {.Solid, .Cull_Same}, 0},
+	LEAVES = {.Cutout, {.Casts_AO, .Solid}, 1},
+	WATER  = {.Translucent, {.Cull_Same, .Replaceable, .Fluid}, 1},
 	SAND   = OPAQUE_CUBE,
 }
 

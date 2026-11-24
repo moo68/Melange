@@ -5,8 +5,9 @@
 // mesh.unpack_vertex (keep the two in sync):
 //   x: pos.x (9 bits) | u (5) << 9
 //   y: pos.y (9)      | v (5) << 9 | ao (2) << 14
-//   z: pos.z (9)      | face (3) << 9 | sky light (4) << 12
-//   w: tile (8)       | block light (4) << 8
+//   z: pos.z (9)      | face (3) << 9 | block light bits 0..3 << 12
+//   w: tile (8)       | sky light (6) << 8 | block light bits 4..5 << 14
+// Light is in 1/4 levels (0..60 = level 0..15).
 // Positions are chunk-local in 1/16 block, UVs in 1/16 tile. `vertexPosition`
 // is raylib's default attribute name (bound to location 0).
 
@@ -25,6 +26,7 @@ centroid out vec2 fragTexCoord; // position within the tile, 0..1
 flat out vec2 fragTile;         // atlas tile (column, row)
 out vec4 fragColor;
 out vec3 fragWorldPos;
+out float fragSkyLight;         // smooth sky light level, 0..15 (interpolated)
 
 void main() {
     uvec4 w = uvec4(vertexPosition);
@@ -36,6 +38,7 @@ void main() {
     fragTile = vec2(tile & 15u, tile >> 4);
     float shade = shadeTable[int(face * 4u + ao)];
     fragColor = vec4(shade, shade, shade, 1.0);
+    fragSkyLight = float((w.w >> 8) & 63u) / 4.0;
     vec3 world = chunkOrigin + local;
     fragWorldPos = world;
     gl_Position = mvp * vec4(world, 1.0);

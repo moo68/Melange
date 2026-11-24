@@ -23,10 +23,10 @@ packed_vertices_round_trip :: proc(t: ^testing.T) {
 	check(t, {ao = 3})
 	check(t, {face = .Neg_Z})
 	check(t, {tile = 255})
-	check(t, {sky = mesh.MAX_LIGHT})
-	check(t, {block = mesh.MAX_LIGHT})
+	check(t, {sky = mesh.VERTEX_LIGHT_MASK})
+	check(t, {block = mesh.VERTEX_LIGHT_MASK})
 	// All at their maxima together.
-	check(t, {position = mesh.MAX_POSITION, uv = mesh.POSITION_SCALE, face = .Neg_Z, ao = 3, tile = 255, sky = mesh.MAX_LIGHT, block = mesh.MAX_LIGHT})
+	check(t, {position = mesh.MAX_POSITION, uv = mesh.POSITION_SCALE, face = .Neg_Z, ao = 3, tile = 255, sky = mesh.VERTEX_LIGHT_MASK, block = mesh.VERTEX_LIGHT_MASK})
 	// Random values over the full ranges.
 	for _ in 0 ..< 100_000 {
 		check(
@@ -37,8 +37,8 @@ packed_vertices_round_trip :: proc(t: ^testing.T) {
 				face = world.Face(rand.int_max(len(world.Face))),
 				ao = u8(rand.int_max(4)),
 				tile = world.Tile(rand.int_max(256)),
-				sky = u8(rand.int_max(mesh.MAX_LIGHT + 1)),
-				block = u8(rand.int_max(mesh.MAX_LIGHT + 1)),
+				sky = u8(rand.int_max(mesh.VERTEX_LIGHT_MASK + 1)),
+				block = u8(rand.int_max(mesh.VERTEX_LIGHT_MASK + 1)),
 			},
 		)
 	}
@@ -115,7 +115,7 @@ terrain_mesh_vertices_are_consistent :: proc(t: ^testing.T) {
 								testing.expect(t, v[k].position[axis] == v[0].position[axis], "in the face's plane")
 								testing.expect(t, v[k].position.x <= mesh.MAX_POSITION && v[k].position.y <= mesh.MAX_POSITION && v[k].position.z <= mesh.MAX_POSITION)
 								testing.expect(t, v[k].uv.x <= mesh.POSITION_SCALE && v[k].uv.y <= mesh.POSITION_SCALE)
-								testing.expect(t, v[k].sky == mesh.MAX_LIGHT && v[k].block == 0)
+								testing.expect(t, v[k].sky == mesh.MAX_VERTEX_LIGHT && v[k].block == 0)
 							}
 							a02 := int(v[0].ao) + int(v[2].ao)
 							a13 := int(v[1].ao) + int(v[3].ao)

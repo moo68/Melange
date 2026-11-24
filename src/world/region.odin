@@ -14,14 +14,19 @@ REGION_VOLUME :: REGION_SIZE * REGION_SIZE * REGION_SIZE
 #assert(1 << REGION_SHIFT == REGION_SIZE)
 
 REGION_BYTES :: size_of([REGION_VOLUME]Chunk)
+REGION_LIGHT_BYTES :: size_of([REGION_VOLUME]Chunk_Light)
 
 Region :: struct {
 	// OS-mapped, zero-filled, page-aligned. Never touch it directly from outside
 	// world/: a slot is only valid while loaded[i] is true.
 	chunks:       ^[REGION_VOLUME]Chunk,
+	// Light, in a second mapping with the same rules (4 KB per chunk, one
+	// page). Only .Mixed slots are ever written (light.odin).
+	light:        ^[REGION_VOLUME]Chunk_Light,
 	// Metadata kept out of Chunk so chunks stay exactly 8 KB / page-aligned.
 	loaded:       [REGION_VOLUME]bool,
 	dirty:        [REGION_VOLUME]bool,
+	light_state:  [REGION_VOLUME]Light_State,
 	loaded_count: int,
 }
 
@@ -44,13 +49,22 @@ region_create :: proc(allocator: mem.Allocator) -> (r: ^Region, err: mem.Allocat
 		free(r, allocator)
 		return nil, verr
 	}
-	// Must happen before anything touches the mapping.
+	light, lerr := virtual.reserve_and_commit(REGION_LIGHT_BYTES)
+	if lerr != nil {
+		virtual.release(raw_data(data), REGION_BYTES)
+		free(r, allocator)
+		return nil, lerr
+	}
+	// Must happen before anything touches the mappings.
 	_disable_huge_pages(data)
+	_disable_huge_pages(light)
 	r.chunks = cast(^[REGION_VOLUME]Chunk)raw_data(data)
+	r.light = cast(^[REGION_VOLUME]Chunk_Light)raw_data(light)
 	return r, nil
 }
 
 region_destroy :: proc(r: ^Region, allocator: mem.Allocator) {
 	virtual.release(r.chunks, REGION_BYTES)
+	virtual.release(r.light, REGION_LIGHT_BYTES)
 	free(r, allocator)
 }

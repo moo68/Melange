@@ -76,6 +76,7 @@ Streamer :: struct {
 	heights:      map[[2]i32]^Column_Heights,
 	heights_seed: i64,
 	evict:        [dynamic][2]i32, // scratch for eviction
+	light_scratch: Chunk_Light, // generate_light's output before it's stored
 	allocator:    mem.Allocator,
 	stats:        Stream_Stats,
 }
@@ -214,15 +215,14 @@ streamer_update :: proc(s: ^Streamer, w: ^World, center: [3]i32) -> (err: mem.Al
 		if world_get_chunk(w, coord) != nil {
 			continue
 		}
-		c := world_create_chunk(w, coord) or_return
-		loaded += 1
-		// Above any possible terrain: no generation, but it may hold edits.
+		// Above any possible terrain: no generation (all air, open sky), but
+		// it may hold edits.
+		ch: ^Column_Heights
 		if coord.y * CHUNK_SIZE <= TERRAIN_MAX_HEIGHT {
-			ch := column_heights(s, w.seed, coord.x, coord.z) or_return
-			prof.scope("gen chunk")
-			generate_chunk_from_heights(c, coord, ch)
+			ch = column_heights(s, w.seed, coord.x, coord.z) or_return
 		}
-		world_apply_edits(w, coord, c)
+		world_load_generated_chunk(w, coord, ch, &s.light_scratch) or_return
+		loaded += 1
 	}
 
 	s.stats.gen_time = time.tick_since(start)
@@ -231,6 +231,27 @@ streamer_update :: proc(s: ^Streamer, w: ^World, center: [3]i32) -> (err: mem.Al
 	s.stats.load_scan_left = len(s.load_order) - s.load_next
 	s.stats.unload_regions_left = len(s.unload_regions) - s.unload_next
 	s.stats.height_columns = len(s.heights)
+	return nil
+}
+
+// Loads chunk `coord` (must not be loaded) as generated terrain: generates
+// it from its column's heights (`ch`; nil = above all terrain: air), sets
+// its generated light, applies its logged edits and queues its relighting
+// (world_light_chunk_loaded; done by world_update_light). `scratch` holds
+// the light before it's stored.
+world_load_generated_chunk :: proc(w: ^World, coord: [3]i32, ch: ^Column_Heights, scratch: ^Chunk_Light) -> mem.Allocator_Error {
+	c := world_create_chunk(w, coord) or_return
+	light_state := Light_State.Sky
+	if ch != nil {
+		prof.scope("gen chunk")
+		generate_chunk_from_heights(c, coord, ch)
+		light_state = generate_light(scratch, c, coord, ch)
+	}
+	world_set_chunk_light(w, coord, light_state, scratch)
+	// After the light: it's the generated terrain's, and the edits are
+	// queued as changes to it.
+	world_apply_edits(w, coord, c)
+	world_light_chunk_loaded(w, coord)
 	return nil
 }
 

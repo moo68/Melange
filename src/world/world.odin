@@ -12,6 +12,8 @@ World :: struct {
 	// a chunk is regenerated.
 	edits:      map[[3]i32][dynamic]Block_Edit,
 	edit_count: int, // blocks with a logged edit
+	light_mixed_count: int, // loaded chunks storing a light array (Light_State.Mixed)
+	lighting:   Light_Engine, // pending relight work (light_engine.odin)
 	allocator: mem.Allocator,
 }
 
@@ -20,6 +22,7 @@ world_init :: proc(w: ^World, seed: i64 = 0, allocator := context.allocator) {
 	w.allocator = allocator
 	w.regions = make(map[[3]i32]^Region, allocator)
 	w.edits = make(map[[3]i32][dynamic]Block_Edit, allocator)
+	light_engine_init(&w.lighting, allocator)
 }
 
 world_destroy :: proc(w: ^World) {
@@ -28,6 +31,7 @@ world_destroy :: proc(w: ^World) {
 	}
 	delete(w.regions)
 	edit_log_destroy(w)
+	light_engine_destroy(&w.lighting)
 	w^ = {}
 }
 
@@ -111,7 +115,12 @@ world_unload_chunk :: proc(w: ^World, coord: [3]i32) {
 	if r == nil {
 		return
 	}
-	_zero_chunk_memory(&r.chunks[i])
+	_zero_memory(&r.chunks[i], size_of(Chunk))
+	if r.light_state[i] == .Mixed {
+		_zero_memory(&r.light[i], size_of(Chunk_Light))
+		w.light_mixed_count -= 1
+	}
+	r.light_state[i] = .Dark
 	r.loaded[i] = false
 	r.dirty[i] = false
 	r.loaded_count -= 1
@@ -247,7 +256,8 @@ world_get_block :: proc(w: ^World, b: [3]i32) -> (id: Block_ID, ok: bool) {
 // Marks the chunk dirty, plus every neighbor chunk whose mesh reads this
 // block: on a chunk face that's 1 neighbor, on an edge 3, on a corner 7
 // (meshes read a 1-block border all around, for culling and AO). Setting a block to its current value writes nothing, so setting air
-// on untouched memory doesn't allocate RAM.
+// on untouched memory doesn't allocate RAM. The change is queued for
+// relighting (world_update_light).
 world_set_block :: proc(w: ^World, b: [3]i32, id: Block_ID) -> bool {
 	coord := block_to_chunk(b)
 	r, i := find_slot(w, coord)
@@ -261,13 +271,25 @@ world_set_block :: proc(w: ^World, b: [3]i32, id: Block_ID) -> bool {
 	}
 	chunk_set(c, l.x, l.y, l.z, id)
 	r.dirty[i] = true
+	mark_border_neighbors_dirty(w, coord, l)
 	edit_log_record(w, coord, chunk_index(l.x, l.y, l.z), id) // survives unloading
+	append(&w.lighting.changes, b) // relit by world_update_light
+	return true
+}
 
+// Marks dirty every neighbor chunk whose mesh reads the cell at local `l`
+// of chunk `coord` (its 1-block border): none for an inner cell, 1 on a
+// face, 3 on an edge, 7 on a corner. Not the chunk itself.
+@(private)
+mark_border_neighbors_dirty :: proc(w: ^World, coord: [3]i32, l: [3]i32) {
 	// Per axis: 0 always, plus -1/+1 if the block is on that border.
 	lo, hi: [3]i32
 	for axis in 0 ..< 3 {
 		lo[axis] = -1 if l[axis] == 0 else 0
 		hi[axis] = 1 if l[axis] == CHUNK_MASK else 0
+	}
+	if lo == {} && hi == {} {
+		return
 	}
 	for dy in lo.y ..= hi.y {
 		for dz in lo.z ..= hi.z {
@@ -278,5 +300,4 @@ world_set_block :: proc(w: ^World, b: [3]i32, id: Block_ID) -> bool {
 			}
 		}
 	}
-	return true
 }

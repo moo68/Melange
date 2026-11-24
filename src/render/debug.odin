@@ -43,15 +43,19 @@ draw_debug_overlay :: proc(r: ^Renderer, w: ^world.World, s: ^world.Streamer, ca
 	if hit, ok := target.?; ok {
 		b := hit.block
 		id, _ := world.world_get_block(w, b)
-		line(&o, 164, "target %d %d %d  %s  face %s", b.x, b.y, b.z, world.block_name(id), face_label(hit.normal))
+		// Light of the cell the targeted face looks into (what lights it).
+		light, lit := world.world_get_light(w, b + hit.normal)
+		line(&o, 164, "target %d %d %d  %s  face %s  sky light %d", b.x, b.y, b.z, world.block_name(id), face_label(hit.normal), world.light_sky(light) if lit else 0)
 	} else {
 		line(&o, 164, "target none")
 	}
 	line(&o, 186, "place %s  (1 stone, 2 dirt, 3 grass, 4 glass, 5 leaves, 6 water, 7 sand)", world.block_name(selected))
-	line(&o, 208, "edits %d in %d chunks", w.edit_count, len(w.edits))
-	line(&o, 238, "F1 wireframe [%s]", "on" if wireframe else "off")
-	line(&o, 260, "F2 freeze culling [%s]", "on" if cull_frozen else "off")
-	line(&o, 282, "F3 debug: flying (F3 again to walk)")
+	line(&o, 208, "edits %d in %d chunks; light arrays %d chunks (%.1f MB)", w.edit_count, len(w.edits), w.light_mixed_count, f64(w.light_mixed_count * size_of(world.Chunk_Light)) / 1e6)
+	ls := w.lighting.stats
+	line(&o, 230, "last relight: %d changes, %d cleared, %d raised in %.3f ms", ls.changes, ls.removed, ls.raised, ms(ls.time))
+	line(&o, 260, "F1 wireframe [%s]", "on" if wireframe else "off")
+	line(&o, 282, "F2 freeze culling [%s]", "on" if cull_frozen else "off")
+	line(&o, 304, "F3 debug: flying (F3 again to walk)")
 
 	width: i32 = 0
 	for i in 0 ..< o.count {

@@ -482,8 +482,9 @@ remesh_chunk :: proc(r: ^Renderer, w: ^world.World, coord: [3]i32) -> bool {
 	if !world.neighbors_complete(&faces) {
 		return false
 	}
+	light := world.world_get_light_neighborhood(w, coord)
 	prof.begin("mesh chunk")
-	mesh.build_chunk_mesh_neighborhood(&hood, &r.scratch)
+	mesh.build_chunk_mesh_neighborhood(&hood, &r.scratch, &light)
 	prof.end()
 	if mesh.chunk_mesh_face_count(&r.scratch) > 0 {
 		prof.scope("upload")

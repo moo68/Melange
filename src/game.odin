@@ -132,6 +132,7 @@ game_update :: proc(g: ^Game, r: ^render.Renderer, cfg: settings.Settings) -> bo
 		return false
 	}
 	render.renderer_forget_chunks(r, g.s.unloaded[:])
+	world.world_update_light(&g.w) // after edits and streaming, before meshing
 	render.renderer_update(r, &g.w, center)
 
 	session_tick(&g.sess, &g.w, &g.pl, f64(rl.GetFrameTime()))

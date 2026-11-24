@@ -56,3 +56,24 @@ region_ram_follows_writes :: proc(t: ^testing.T) {
 	world.world_unload_chunk(&w, {1, 0, 0})
 	testing.expect_value(t, resident_pages(t, r.chunks, world.REGION_BYTES), 1)
 }
+
+// Light follows the same rule: only Mixed chunks write their light page
+// (one 4 KB page each); uniform states and unloading cost nothing.
+@(test)
+light_ram_follows_mixed_chunks :: proc(t: ^testing.T) {
+	w: world.World
+	world.world_init(&w)
+	defer world.world_destroy(&w)
+	_, _ = world.world_create_chunk(&w, {0, 0, 0})
+	_, _ = world.world_create_chunk(&w, {1, 0, 0})
+	r := w.regions[{0, 0, 0}]
+	src := new(world.Chunk_Light)
+	defer free(src)
+	world.world_set_chunk_light(&w, {0, 0, 0}, .Sky, src)
+	world.world_set_chunk_light(&w, {1, 0, 0}, .Dark, src)
+	testing.expect_value(t, resident_pages(t, r.light, world.REGION_LIGHT_BYTES), 0)
+	world.world_set_chunk_light(&w, {1, 0, 0}, .Mixed, src)
+	testing.expect_value(t, resident_pages(t, r.light, world.REGION_LIGHT_BYTES), 1)
+	world.world_unload_chunk(&w, {1, 0, 0})
+	testing.expect_value(t, resident_pages(t, r.light, world.REGION_LIGHT_BYTES), 0)
+}
