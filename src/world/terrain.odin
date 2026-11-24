@@ -3,10 +3,15 @@ package world
 import "core:math"
 import "core:math/noise"
 
-// Heightmap terrain from three layers of 2D OpenSimplex2 noise:
+// Heightmap terrain from 2D OpenSimplex2 noise:
 //
-//   height = BASE + plains + mask * mountains
+//   land   = BASE + plains + mask * mountains
+//   height = lerp(ocean_floor, land, land_weight)
 //
+//   continentalness: very low-frequency noise splitting the world into land
+//              and ocean (~50/50); land_weight is a smoothstep across the
+//              coastal band, so the land slopes down into the sea.
+//   ocean_floor: SEA_LEVEL - OCEAN_DEPTH, varied by gentle noise.
 //   plains:    low, gently rolling fBm with a little small-scale detail.
 //   mask:      very low-frequency noise pushed through a smoothstep, so it's
 //              0 (plains) over most of the world and ramps to 1 inside
@@ -19,6 +24,20 @@ import "core:math/noise"
 // offset so layers don't line up. Constants are the tuning knobs.
 
 TERRAIN_BASE_HEIGHT :: 8 // plains surface Y on average
+
+// Oceans. Water fills every column up to the sea level (blocks above the
+// surface at Y <= SEA_LEVEL). Land heights are unchanged by this (plains
+// never dip below Y 1), so water only forms where the continentalness lowers
+// the land: oceans and coastal lagoons.
+TERRAIN_SEA_LEVEL        :: 0
+TERRAIN_CONT_SCALE       :: 2000.0 // blocks per cycle: oceans/continents ~1000+ blocks across
+TERRAIN_CONT_OCTAVES     :: 3
+TERRAIN_COAST_CENTER     :: 0.0  // continentalness where land and ocean meet (tuned for ~50% water)
+TERRAIN_COAST_WIDTH      :: 0.06 // half-width of the coastal band (land_weight 0..1 across it)
+TERRAIN_OCEAN_DEPTH      :: 16   // ocean floor below sea level on average
+TERRAIN_FLOOR_SCALE      :: 150.0
+TERRAIN_FLOOR_OCTAVES    :: 3
+TERRAIN_FLOOR_VARIATION  :: 5    // ocean floor varies within about +/- this
 
 // Plains
 TERRAIN_PLAINS_SCALE     :: 220.0 // blocks per cycle of the broadest octave
@@ -49,8 +68,9 @@ TERRAIN_STONE_LINE :: 34 // columns at or above this height are bare stone
 TERRAIN_CLIFF_STEP :: 3  // ...and so are columns this many blocks above/below a neighbor
 
 // Hard bounds on terrain_height (it clamps to these). Generation relies on
-// them to skip whole chunks without sampling any noise.
-TERRAIN_MIN_HEIGHT :: TERRAIN_BASE_HEIGHT - TERRAIN_PLAINS_AMPLITUDE
+// them to skip whole chunks without sampling any noise. The lowest point is
+// the deepest ocean floor (land is a blend toward it, never below it).
+TERRAIN_MIN_HEIGHT :: TERRAIN_SEA_LEVEL - TERRAIN_OCEAN_DEPTH - TERRAIN_FLOOR_VARIATION
 TERRAIN_MAX_HEIGHT :: TERRAIN_BASE_HEIGHT + TERRAIN_PLAINS_AMPLITUDE + TERRAIN_MOUNTAIN_AMPLITUDE
 // Below this Y every block is stone, whatever the column height.
 TERRAIN_ALL_STONE_BELOW :: TERRAIN_MIN_HEIGHT - TERRAIN_DIRT_DEPTH
@@ -64,6 +84,10 @@ SEED_MASK :: 100
 SEED_MASSIF :: 200
 @(private)
 SEED_RIDGES :: 300
+@(private)
+SEED_CONT :: 400
+@(private)
+SEED_FLOOR :: 500
 
 // fBm: sum of `octaves` noise layers, each double the frequency and half the
 // amplitude of the last, normalized to about [-1, 1].
@@ -100,6 +124,18 @@ ridged :: proc(seed: i64, p: noise.Vec2, octaves: int) -> f32 {
 	return sum / total
 }
 
+// Continentalness at a column: ~[-1, 1], ocean below TERRAIN_COAST_CENTER.
+terrain_continentalness :: proc(seed: i64, x, z: i32) -> f32 {
+	p := noise.Vec2{f64(x), f64(z)} / TERRAIN_CONT_SCALE
+	return fbm(seed + SEED_CONT, p, TERRAIN_CONT_OCTAVES)
+}
+
+// 0 in open ocean, 1 inland, smooth across the coastal band.
+terrain_land_weight :: proc(seed: i64, x, z: i32) -> f32 {
+	c := terrain_continentalness(seed, x, z)
+	return math.smoothstep(f32(TERRAIN_COAST_CENTER - TERRAIN_COAST_WIDTH), f32(TERRAIN_COAST_CENTER + TERRAIN_COAST_WIDTH), c)
+}
+
 // 0 over plains, 1 inside mountain regions, smooth in between.
 terrain_mountain_mask :: proc(seed: i64, x, z: i32) -> f32 {
 	p := noise.Vec2{f64(x), f64(z)} / TERRAIN_MASK_SCALE
@@ -112,6 +148,25 @@ terrain_mountain_mask :: proc(seed: i64, x, z: i32) -> f32 {
 // chunk asks, and safe on any thread.
 terrain_height :: proc(seed: i64, x, z: i32) -> i32 {
 	pos := noise.Vec2{f64(x), f64(z)}
+	land_weight := terrain_land_weight(seed, x, z)
+	// Each side is only sampled where it contributes.
+	floor := f32(0)
+	if land_weight < 1 {
+		variation := fbm(seed + SEED_FLOOR, pos / TERRAIN_FLOOR_SCALE, TERRAIN_FLOOR_OCTAVES) * TERRAIN_FLOOR_VARIATION
+		floor = f32(TERRAIN_SEA_LEVEL - TERRAIN_OCEAN_DEPTH) + variation
+	}
+	h := floor
+	if land_weight > 0 {
+		h = math.lerp(floor, terrain_land_height(seed, pos), land_weight)
+	}
+	// Noise is only approximately in range; clamp so the bounds above are exact.
+	return clamp(i32(math.floor(h)), TERRAIN_MIN_HEIGHT, TERRAIN_MAX_HEIGHT)
+}
+
+// The land surface before blending toward the ocean floor (plains + mountains).
+@(private)
+terrain_land_height :: proc(seed: i64, pos: noise.Vec2) -> f32 {
+	x, z := i32(pos.x), i32(pos.y)
 	plains := fbm(seed + SEED_PLAINS, pos / TERRAIN_PLAINS_SCALE, TERRAIN_PLAINS_OCTAVES) * TERRAIN_PLAINS_AMPLITUDE
 
 	h := f32(TERRAIN_BASE_HEIGHT) + plains
@@ -125,8 +180,7 @@ terrain_height :: proc(seed: i64, x, z: i32) -> i32 {
 		m := shape * (1 - TERRAIN_RIDGE_STRENGTH + TERRAIN_RIDGE_STRENGTH * r)
 		h += mask * m * TERRAIN_MOUNTAIN_AMPLITUDE
 	}
-	// Noise is only approximately in range; clamp so the bounds above are exact.
-	return clamp(i32(math.floor(h)), TERRAIN_MIN_HEIGHT, TERRAIN_MAX_HEIGHT)
+	return h
 }
 
 // What a column looks like at the surface.
@@ -153,11 +207,12 @@ terrain_column :: proc(seed: i64, x, z: i32) -> Column {
 	)
 }
 
-// Block at height `wy` in a column.
+// Block at height `wy` in a column: water fills above the surface up to
+// the sea level.
 column_block :: proc "contextless" (col: Column, wy: i32) -> Block_ID {
 	switch {
 	case wy > col.height:
-		return AIR
+		return WATER if wy <= TERRAIN_SEA_LEVEL else AIR
 	case col.bare_stone:
 		return STONE
 	case wy == col.height:
@@ -212,8 +267,8 @@ generate_chunk_from_heights :: proc(c: ^Chunk, coord: [3]i32, ch: ^Column_Height
 	top := bottom + CHUNK_SIZE - 1
 
 	// Fast paths, no per-block work:
-	if bottom > ch.max_height {
-		return // entirely above this column's surface: leave it as zeroed air
+	if bottom > max(ch.max_height, TERRAIN_SEA_LEVEL) {
+		return // entirely above this column's surface and the sea: leave it as zeroed air
 	}
 	if top < TERRAIN_ALL_STONE_BELOW {
 		for &b in c.blocks {
@@ -250,4 +305,30 @@ generate_chunk :: proc(c: ^Chunk, coord: [3]i32, seed: i64) {
 		column_heights_compute(&ch, seed, coord.x, coord.z)
 	}
 	generate_chunk_from_heights(c, coord, &ch)
+}
+
+// Spawn search: the nearest column (by ring, then scan order) at or near
+// (x, z) whose surface is above the sea, checked on a SPAWN_SEARCH_STEP grid
+// out to SPAWN_SEARCH_RADIUS. Returns (x, z) itself if it's land, and
+// falls back to it (ok = false) if no land is found. Pure.
+SPAWN_SEARCH_STEP :: 16
+SPAWN_SEARCH_RADIUS :: 8192 // a few continent widths
+
+find_land :: proc(seed: i64, x, z: i32) -> (land: [2]i32, ok: bool) {
+	if terrain_height(seed, x, z) > TERRAIN_SEA_LEVEL {
+		return {x, z}, true
+	}
+	for r := i32(1); r * SPAWN_SEARCH_STEP <= SPAWN_SEARCH_RADIUS; r += 1 {
+		// The square ring at Chebyshev distance r (in grid steps).
+		for i := -r; i <= r; i += 1 {
+			for offset in ([4][2]i32{{i, -r}, {i, r}, {-r, i}, {r, i}}) {
+				// Corners appear twice; harmless.
+				p := [2]i32{x, z} + offset * SPAWN_SEARCH_STEP
+				if terrain_height(seed, p.x, p.y) > TERRAIN_SEA_LEVEL {
+					return p, true
+				}
+			}
+		}
+	}
+	return {x, z}, false
 }

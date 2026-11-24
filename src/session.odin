@@ -38,7 +38,7 @@ request_from_opts :: proc(opts: Options) -> World_Request {
 session_open :: proc(req: World_Request, w: ^world.World, pl: ^player.Player, debug: ^bool) -> (sess: Session, failure: string) {
 	if req.name == "" {
 		world.world_init(w, req.seed)
-		pl^ = player.player_spawn(w.seed, 0, 0, 45, -10)
+		pl^ = spawn_player(w.seed)
 		return {}, ""
 	}
 	sess.saving = true
@@ -56,8 +56,7 @@ session_open :: proc(req: World_Request, w: ^world.World, pl: ^player.Player, de
 		seed := req.seed if req.seed_set else i64(rand.uint64())
 		sess.info = save.new_world_info(name, seed, unix_now())
 		world.world_init(w, seed)
-		// Walking on the surface at the origin, looking toward +X+Z and a bit down.
-		pl^ = player.player_spawn(w.seed, 0, 0, 45, -10)
+		pl^ = spawn_player(w.seed)
 		if !session_save(&sess, w, pl) {
 			session_close(&sess)
 			world.world_destroy(w)
@@ -129,4 +128,11 @@ session_close :: proc(sess: ^Session) {
 // Now, in unix seconds.
 unix_now :: proc() -> i64 {
 	return time.time_to_unix(time.now())
+}
+
+// A new player walking on the land nearest the origin (oceans would put
+// them on the seabed), looking toward +X+Z and a bit down.
+spawn_player :: proc(seed: i64) -> player.Player {
+	land, _ := world.find_land(seed, 0, 0)
+	return player.player_spawn(seed, land.x, land.y, 45, -10)
 }

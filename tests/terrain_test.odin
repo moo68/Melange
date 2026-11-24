@@ -29,7 +29,7 @@ different_seeds_differ :: proc(t: ^testing.T) {
 
 // Every column, read across a vertical stack of chunks, must match the
 // column's classification: bare stone (peak/cliff) or stone ... dirt x3,
-// grass on top; air above terrain_height. Checks that stacked chunks agree
+// grass on top; water above terrain_height up to the sea level, air above. Checks that stacked chunks agree
 // with each other and that generate_chunk's shared height grid agrees with
 // the single-column terrain_column.
 expect_columns_layered :: proc(t: ^testing.T, seed: i64, cx, cz: i32) {
@@ -54,7 +54,7 @@ expect_columns_layered :: proc(t: ^testing.T, seed: i64, cx, cz: i32) {
 				want := world.STONE
 				switch {
 				case wy > h:
-					want = world.AIR
+					want = world.WATER if wy <= world.TERRAIN_SEA_LEVEL else world.AIR
 				case col.bare_stone:
 					want = world.STONE
 				case wy == h:
@@ -75,6 +75,9 @@ columns_are_layered_correctly_across_chunks :: proc(t: ^testing.T) {
 	SEED :: 7
 	// A plains chunk...
 	expect_columns_layered(t, SEED, 1, -2)
+	// ...an ocean chunk (water over the floor)...
+	ocean := find_column(SEED, proc(h: i32) -> bool {return h < world.TERRAIN_SEA_LEVEL - 8})
+	expect_columns_layered(t, SEED, ocean.x >> 4, ocean.y >> 4)
 	// ...and a mountain chunk (search outward for one with a tall column).
 	for r := i32(0); r < 400; r += 1 {
 		x := r * 16
@@ -118,22 +121,138 @@ some_surface_is_bare_stone :: proc(t: ^testing.T) {
 	testing.expectf(t, pct > 1 && pct < 30, "bare stone on %.1f%% of columns", pct)
 }
 
-// Plains must be gentle (no step over 1 block where there are no mountains),
-// and nothing anywhere may spike absurdly (catches a scale mistake).
+// Inland plains must be gentle (no step over 1 block away from mountains and
+// the coast), coasts and the open sea mostly so, and nothing anywhere may
+// spike absurdly (catches a scale mistake).
 @(test)
 terrain_is_smooth :: proc(t: ^testing.T) {
 	max_plains, max_any := i32(0), i32(0)
+	coast_n, coast_steep := 0, 0
 	for z := i32(-1500); z < 1500; z += 11 {
 		for x := i32(-1500); x < 1500; x += 3 {
 			d := abs(world.terrain_height(99, x + 1, z) - world.terrain_height(99, x, z))
 			max_any = max(max_any, d)
-			if world.terrain_mountain_mask(99, x, z) == 0 && world.terrain_mountain_mask(99, x + 1, z) == 0 {
+			inland := world.terrain_land_weight(99, x, z) == 1 && world.terrain_land_weight(99, x + 1, z) == 1
+			if !inland {
+				coast_n += 1
+				if d > 1 {
+					coast_steep += 1
+				}
+			} else if world.terrain_mountain_mask(99, x, z) == 0 && world.terrain_mountain_mask(99, x + 1, z) == 0 {
 				max_plains = max(max_plains, d)
 			}
 		}
 	}
 	testing.expectf(t, max_plains <= 1, "plains step up to %d blocks", max_plains)
 	testing.expectf(t, max_any <= 16, "terrain steps up to %d blocks", max_any)
+	testing.expect(t, coast_n > 1000, "the sample has coast and sea")
+	testing.expectf(t, f64(coast_steep) / f64(coast_n) < 0.03, "coast/sea steps over 1 block: %d of %d", coast_steep, coast_n)
+}
+
+// First column on a 64-block spiral-ish scan from the origin whose height
+// matches `want`.
+find_column :: proc(seed: i64, want: proc(h: i32) -> bool) -> [2]i32 {
+	for r := i32(0); r < 400; r += 1 {
+		for p in ([4][2]i32{{r, 0}, {-r, 0}, {0, r}, {0, -r}}) {
+			c := p * 64
+			if want(world.terrain_height(seed, c.x, c.y)) {
+				return c
+			}
+		}
+	}
+	panic("no such column")
+}
+
+// About half the world is water (the continentalness threshold is tuned for
+// it), measured over a 40,000-block square for a few seeds; oceans are
+// 11-21 blocks deep.
+@(test)
+about_half_the_world_is_ocean :: proc(t: ^testing.T) {
+	total := 0.0
+	for seed in ([]i64{1337, 7, 42}) {
+		n, water := 0, 0
+		for z := i32(-20000); z < 20000; z += 160 {
+			for x := i32(-20000); x < 20000; x += 160 {
+				h := world.terrain_height(seed, x, z)
+				n += 1
+				if h < world.TERRAIN_SEA_LEVEL {
+					water += 1
+				}
+			}
+		}
+		pct := 100 * f64(water) / f64(n)
+		testing.expectf(t, pct > 35 && pct < 65, "seed %d: %.1f%% water", seed, pct)
+		total += pct
+	}
+	testing.expectf(t, total / 3 > 42 && total / 3 < 58, "mean water %.1f%%", total / 3)
+	testing.expect_value(t, world.TERRAIN_SEA_LEVEL, 0)
+	testing.expect_value(t, world.TERRAIN_MIN_HEIGHT, -21)
+}
+
+// Water fills exactly the cells between an ocean floor and the sea level;
+// nothing above the sea is water, and chunks above both the sea and the
+// column's surface are skipped as air.
+@(test)
+ocean_chunks_hold_water :: proc(t: ^testing.T) {
+	SEED :: 1337
+	ocean := find_column(SEED, proc(h: i32) -> bool {return h < -10})
+	cx, cz := ocean.x >> 4, ocean.y >> 4
+	ch := new(world.Column_Heights)
+	defer free(ch)
+	world.column_heights_compute(ch, SEED, cx, cz)
+	testing.expect(t, ch.max_height < world.TERRAIN_SEA_LEVEL, "the whole 16x16 is underwater")
+	water := 0
+	for cy in i32(-2) ..= 1 {
+		c := new(world.Chunk)
+		defer free(c)
+		world.generate_chunk_from_heights(c, {cx, cy, cz}, ch)
+		for y in i32(0) ..< 16 {
+			wy := cy * 16 + y
+			for z in i32(0) ..< 16 {
+				for x in i32(0) ..< 16 {
+					h := ch.columns[z][x].height
+					got := world.chunk_get(c, x, y, z)
+					if wy > h && wy <= world.TERRAIN_SEA_LEVEL {
+						if got != world.WATER {
+							testing.fail_now(t, "missing water between the floor and the sea level")
+						}
+						water += 1
+					} else if got == world.WATER {
+						testing.fail_now(t, "water outside the sea")
+					}
+				}
+			}
+		}
+		if cy == 1 {
+			// Bottom at Y 16: above the sea and this column's surface.
+			for b in c.blocks {
+				testing.expect(t, b == world.AIR, "chunk above the sea isn't empty")
+			}
+		}
+	}
+	testing.expect(t, water > 16 * 16 * 10, "a deep ocean column holds water")
+}
+
+// New players spawn on land: the origin itself if it's land, otherwise the
+// nearest land found by the ring search.
+@(test)
+spawn_search_finds_land :: proc(t: ^testing.T) {
+	for seed in ([]i64{1337, 7, 42, 99, 5}) {
+		land, ok := world.find_land(seed, 0, 0)
+		testing.expectf(t, ok, "seed %d: land found", seed)
+		testing.expectf(t, world.terrain_height(seed, land.x, land.y) > world.TERRAIN_SEA_LEVEL, "seed %d: spawn %v is above the sea", seed, land)
+	}
+	// Starting on land returns that column.
+	l := find_column(1337, proc(h: i32) -> bool {return h > 3})
+	got, _ := world.find_land(1337, l.x, l.y)
+	testing.expect_value(t, got, l)
+	// Starting deep in an ocean finds land that isn't absurdly far.
+	o := find_column(1337, proc(h: i32) -> bool {return h < -12})
+	got2, ok2 := world.find_land(1337, o.x, o.y)
+	testing.expect(t, ok2)
+	testing.expect(t, world.terrain_height(1337, got2.x, got2.y) > world.TERRAIN_SEA_LEVEL)
+	d := got2 - o
+	testing.expectf(t, max(abs(d.x), abs(d.y)) <= world.SPAWN_SEARCH_RADIUS, "land at %v from %v", got2, o)
 }
 
 // Mostly plains, with occasional mountains that reach well above them.
@@ -189,8 +308,9 @@ cached_heights_match_direct_generation :: proc(t: ^testing.T) {
 	SEED :: 11
 	MIN_CY :: (world.TERRAIN_ALL_STONE_BELOW >> 4) - 1
 	MAX_CY :: (world.TERRAIN_MAX_HEIGHT >> 4) + 1
-	// A plains column and the first mountain column found.
-	cols := [2][2]i32{{3, -5}, {0, 0}}
+	// A plains column, the first mountain column found and an ocean column.
+	ocean := find_column(SEED, proc(h: i32) -> bool {return h < -8})
+	cols := [3][2]i32{{3, -5}, {0, 0}, {ocean.x >> 4, ocean.y >> 4}}
 	for r := i32(0); r < 400; r += 1 {
 		if world.terrain_height(SEED, r * 16, 0) > world.TERRAIN_STONE_LINE + 10 {
 			cols[1] = {r, 0}

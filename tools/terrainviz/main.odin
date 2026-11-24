@@ -1,7 +1,9 @@
 // Terrain preview: renders the world generator's heightmap to PNGs and prints
 // statistics, without opening a window. Run via `./run.sh terrain-preview`.
 //
-//   map.png      hill-shaded top-down map (grass vs bare stone), 1 px = STEP blocks
+//   map.png      hill-shaded top-down map (grass / bare stone / water by
+//                depth), 1 px = STEP blocks
+//   overview.png the same at 1 px = OVERVIEW_STEP blocks (oceans and continents)
 //   profile.png  1:1 side view through the tallest peak on the map
 //
 // Use it when tuning TERRAIN_* constants in src/world/terrain.odin: it's far
@@ -17,6 +19,7 @@ import rl "third_party:raylib"
 
 MAP_PX :: 640 // map pixels per side
 STEP   :: 4   // blocks per map pixel (so the map covers MAP_PX * STEP blocks)
+OVERVIEW_STEP :: 16 // overview.png: MAP_PX * 16 = 10,240 blocks across
 PROFILE_W :: 1200
 PROFILE_H :: 140
 
@@ -32,10 +35,11 @@ main :: proc() {
 	}
 	rl.SetTraceLogLevel(.WARNING)
 
-	peak := render_map(opts)
+	peak := render_map(opts, STEP, "map.png")
+	render_map(opts, OVERVIEW_STEP, "overview.png")
 	render_profile(opts, peak)
 	print_stats(opts.seed)
-	fmt.printfln("wrote %s/map.png and %s/profile.png (seed %d)", opts.out_dir, opts.out_dir, opts.seed)
+	fmt.printfln("wrote map.png, overview.png and profile.png to %s (seed %d)", opts.out_dir, opts.seed)
 }
 
 parse_args :: proc() -> (opts: Options, ok: bool) {
@@ -69,14 +73,15 @@ parse_args :: proc() -> (opts: Options, ok: bool) {
 	return opts, true
 }
 
-// Hill-shaded map centered on the origin. Returns the tallest column's (x, z).
-render_map :: proc(opts: Options) -> (peak: [2]i32) {
-	ORIGIN :: -MAP_PX * STEP / 2
+// Hill-shaded map centered on the origin, `step` blocks per pixel. Returns
+// the tallest column's (x, z).
+render_map :: proc(opts: Options, step: int, file: string) -> (peak: [2]i32) {
+	ORIGIN := -MAP_PX * step / 2
 	heights := make([]i32, MAP_PX * MAP_PX)
 	defer delete(heights)
 	for pz in 0 ..< MAP_PX {
 		for px in 0 ..< MAP_PX {
-			heights[pz * MAP_PX + px] = world.terrain_height(opts.seed, i32(ORIGIN + px * STEP), i32(ORIGIN + pz * STEP))
+			heights[pz * MAP_PX + px] = world.terrain_height(opts.seed, i32(ORIGIN + px * step), i32(ORIGIN + pz * step))
 		}
 	}
 	at :: proc(heights: []i32, px, pz: int) -> i32 {
@@ -88,16 +93,21 @@ render_map :: proc(opts: Options) -> (peak: [2]i32) {
 	tallest := i32(min(i32))
 	for pz in 0 ..< MAP_PX {
 		for px in 0 ..< MAP_PX {
-			x, z := i32(ORIGIN + px * STEP), i32(ORIGIN + pz * STEP)
+			x, z := i32(ORIGIN + px * step), i32(ORIGIN + pz * step)
 			col := world.terrain_column(opts.seed, x, z)
 			if col.height > tallest {
 				tallest, peak = col.height, {x, z}
 			}
 			// Light from the north-west.
 			slope := (at(heights, px + 1, pz) - at(heights, px - 1, pz)) + (at(heights, px, pz + 1) - at(heights, px, pz - 1))
-			shade := clamp(1 - 0.12 * f32(slope) / STEP, 0.4, 1.4)
+			shade := clamp(1 - 0.12 * f32(slope) / f32(step), 0.4, 1.4)
 			base: [3]f32
-			if col.bare_stone {
+			if col.height < world.TERRAIN_SEA_LEVEL {
+				// Water: lighter in the shallows, no hill shading.
+				depth := clamp(f32(world.TERRAIN_SEA_LEVEL - col.height) / 22, 0, 1)
+				base = {70 - 45 * depth, 150 - 90 * depth, 215 - 70 * depth}
+				shade = 1
+			} else if col.bare_stone {
 				base = {135, 130, 128}
 			} else {
 				t := clamp(f32(col.height - world.TERRAIN_MIN_HEIGHT) / 40, 0, 1)
@@ -107,7 +117,7 @@ render_map :: proc(opts: Options) -> (peak: [2]i32) {
 			rl.ImageDrawPixel(&img, i32(px), i32(pz), {u8(clamp(c.r, 0, 255)), u8(clamp(c.g, 0, 255)), u8(clamp(c.b, 0, 255)), 255})
 		}
 	}
-	rl.ExportImage(img, fmt.ctprintf("%s/map.png", opts.out_dir))
+	rl.ExportImage(img, fmt.ctprintf("%s/%s", opts.out_dir, file))
 	return
 }
 
@@ -118,7 +128,13 @@ render_profile :: proc(opts: Options, peak: [2]i32) {
 	for i in 0 ..< PROFILE_W {
 		x := peak.x - PROFILE_W / 2 + i32(i)
 		col := world.terrain_column(opts.seed, x, peak.y)
-		top := PROFILE_H - 1 - (col.height - world.TERRAIN_MIN_HEIGHT + 10)
+		to_y :: proc(h: i32) -> i32 {
+			return PROFILE_H - 1 - (h - world.TERRAIN_MIN_HEIGHT + 10)
+		}
+		top := to_y(col.height)
+		for y in max(to_y(world.TERRAIN_SEA_LEVEL), 0) ..< top {
+			rl.ImageDrawPixel(&img, i32(i), y, {50, 100, 200, 255}) // water above the floor
+		}
 		for y in max(top, 0) ..< PROFILE_H {
 			c := rl.Color{120, 120, 120, 255}
 			if !col.bare_stone && y == top {
@@ -132,10 +148,11 @@ render_profile :: proc(opts: Options, peak: [2]i32) {
 	rl.ExportImage(img, fmt.ctprintf("%s/profile.png", opts.out_dir))
 }
 
-// Area fractions, height percentiles and step histograms over a 6000-block square.
+// Area fractions, height percentiles and step histograms over a 6000-block
+// square; the water fraction over a 40,000-block square (oceans are huge).
 print_stats :: proc(seed: i64) {
 	n, mountain, foothill, bare := 0, 0, 0, 0
-	steps_plains, steps_mountain: [12]int
+	steps_plains, steps_mountain, steps_coast: [12]int
 	all: [dynamic]i32
 	defer delete(all)
 	for z := i32(-3000); z < 3000; z += 5 {
@@ -153,7 +170,10 @@ print_stats :: proc(seed: i64) {
 			if col.bare_stone {
 				bare += 1
 			}
-			if m == 0 {
+			lw := world.terrain_land_weight(seed, x, z)
+			if lw < 1 {
+				steps_coast[min(step, 11)] += 1 // ocean and coastal band
+			} else if m == 0 {
 				steps_plains[min(step, 11)] += 1
 			} else {
 				steps_mountain[min(step, 11)] += 1
@@ -197,4 +217,45 @@ print_stats :: proc(seed: i64) {
 	}
 	print_steps("plains  ", steps_plains)
 	print_steps("mountain", steps_mountain)
+	print_steps("coast+sea", steps_coast)
+
+	// Water over a big area: this seed, then the mean over 8 seeds.
+	water_stats(seed, true)
+	total := 0.0
+	for s in i64(0) ..< 8 {
+		total += water_stats(seed + s * 1000, false)
+	}
+	fmt.printfln("water mean over 8 seeds: %.1f%%", total / 8)
+}
+
+// Water fraction (and depth spread when `verbose`) over a 40,000-block square.
+water_stats :: proc(seed: i64, verbose: bool) -> f64 {
+	n, water := 0, 0
+	depths: [dynamic]i32
+	defer delete(depths)
+	for z := i32(-20000); z < 20000; z += 80 {
+		for x := i32(-20000); x < 20000; x += 80 {
+			h := world.terrain_height(seed, x, z)
+			n += 1
+			if h < world.TERRAIN_SEA_LEVEL {
+				water += 1
+				if verbose {
+					append(&depths, world.TERRAIN_SEA_LEVEL - h)
+				}
+			}
+		}
+	}
+	frac := 100 * f64(water) / f64(n)
+	if verbose && len(depths) > 0 {
+		slice.sort(depths[:])
+		fmt.printfln(
+			"water (40k square): %.1f%%, depth p10 %d, p50 %d, p90 %d, max %d",
+			frac,
+			depths[len(depths) / 10],
+			depths[len(depths) / 2],
+			depths[len(depths) * 9 / 10],
+			depths[len(depths) - 1],
+		)
+	}
+	return frac
 }
