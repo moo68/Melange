@@ -18,6 +18,18 @@ world_blocks_movement :: proc(w: ^World, b: [3]i32) -> bool {
 	return !loaded || block_is_solid(id)
 }
 
+// Fluid height within cell `b` for swimming (geom.body_step's fluid_top):
+// the fluid's top (FLUID_SURFACE, or 1 under the same fluid), 0 for no fluid
+// or an unloaded chunk.
+world_fluid_top :: proc(w: ^World, b: [3]i32) -> f64 {
+	id, loaded := world_get_block(w, b)
+	if !loaded || .Fluid not_in block_flags(id) {
+		return 0
+	}
+	above, _ := world_get_block(w, b + {0, 1, 0})
+	return f64(block_top(id, above))
+}
+
 // Breaks (sets to air) the block a ray hit. Returns false if nothing changed.
 world_break_block :: proc(w: ^World, hit: geom.Ray_Hit) -> bool {
 	if !world_is_solid(w, hit.block) {

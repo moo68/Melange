@@ -8,7 +8,8 @@ import rl "third_party:raylib"
 
 // WASD walk (normalized: diagonals aren't faster), Shift sprint, Left Ctrl
 // crouch (slower, lower eye, won't walk off edges; beats sprint), Space jump
-// (held: jumps again on landing). Physics runs in fixed 60 Hz steps;
+// (held: jumps again on landing). In water: swim (see geom.WATER_CONTROL),
+// Space up, Left Ctrl down faster. Physics runs in fixed 60 Hz steps;
 // the camera interpolates between the last two.
 update_walk :: proc(p: ^Player, w: ^world.World) {
 	prof.scope("player physics")
@@ -43,7 +44,7 @@ update_walk :: proc(p: ^Player, w: ^world.World) {
 		p.prev_feet = p.body.position
 		p.prev_eye_height = p.eye_height
 		p.eye_height = geom.eye_height_step(p.eye_height, input.crouch, geom.PHYSICS_DT)
-		geom.body_step(&p.body, input, geom.PHYSICS_DT, w, world.world_blocks_movement)
+		geom.body_step(&p.body, input, geom.PHYSICS_DT, w, world.world_blocks_movement, world.world_fluid_top)
 	}
 	p.alpha = alpha
 }
