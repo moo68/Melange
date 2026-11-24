@@ -37,8 +37,8 @@ single_block_has_six_faces :: proc(t: ^testing.T) {
 	m := &cm[.Opaque]
 	mesh.build_chunk_mesh(c, &no_neighbors, &cm)
 	testing.expect_value(t, mesh.face_count(m), 6)
-	testing.expect_value(t, len(m.positions), 24)
-	testing.expect_value(t, len(m.indices), 36)
+	testing.expect_value(t, len(m.vertices), 24)
+	testing.expect_value(t, index_count(m), 36)
 }
 
 @(test)
@@ -92,7 +92,7 @@ checkerboard_worst_case_fits_u16 :: proc(t: ^testing.T) {
 	m := &cm[.Opaque]
 	mesh.build_chunk_mesh(c, &no_neighbors, &cm)
 	testing.expect_value(t, mesh.face_count(m), 3 * S * S * S)
-	testing.expect(t, len(m.positions) <= 65536, "vertex count overflows u16 indices")
+	testing.expect(t, len(m.vertices) <= 65536, "vertex count overflows u16 indices")
 }
 
 // Every triangle must wind counter-clockwise when viewed from outside, i.e.
@@ -108,12 +108,12 @@ triangles_wind_counter_clockwise :: proc(t: ^testing.T) {
 	m := &cm[.Opaque]
 	mesh.build_chunk_mesh(c, &no_neighbors, &cm)
 
-	for i := 0; i < len(m.indices); i += 3 {
-		a := m.positions[m.indices[i]]
-		b := m.positions[m.indices[i + 1]]
-		d := m.positions[m.indices[i + 2]]
+	for i := 0; i < index_count(m); i += 3 {
+		a := vpos(m, index_at(i))
+		b := vpos(m, index_at(i + 1))
+		d := vpos(m, index_at(i + 2))
 		geometric := linalg.cross(b - a, d - a)
-		stored := m.normals[m.indices[i]]
+		stored := vnormal(m, index_at(i))
 		testing.expectf(t, linalg.dot(geometric, stored) > 0, "triangle %d winds the wrong way", i / 3)
 	}
 }

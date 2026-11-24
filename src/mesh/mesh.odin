@@ -1,18 +1,13 @@
 package mesh
 
-import "core:math/linalg"
 import "melange:world"
 
-// CPU-side mesh for one chunk, in chunk-local space (0..CHUNK_SIZE).
-// Layout matches what raylib's Mesh expects, so render/ can upload these
-// arrays directly. No raylib dependency here.
+// CPU-side mesh for one chunk pass, in chunk-local space (0..CHUNK_SIZE):
+// 4 packed vertices per face (see Vertex), in QUAD_INDICES order. No index
+// data: every chunk draws with one shared index buffer (quad_indices). No
+// raylib dependency here.
 Mesh_Data :: struct {
-	positions: [dynamic][3]f32,
-	normals:   [dynamic][3]f32,
-	texcoords: [dynamic][2]f32, // position within the face's tile, 0..1 (not atlas UVs)
-	tiles:     [dynamic][2]f32, // atlas tile (column, row), same for all 4 vertices of a face
-	colors:    [dynamic][4]u8, // directional shade, multiplied with the texture (later: AO/light)
-	indices:   [dynamic]u16,
+	vertices: [dynamic]Vertex,
 }
 
 // Which mesh a face goes into; each pass is drawn with its own shader.
@@ -39,7 +34,7 @@ block_pass :: #force_inline proc "contextless" (id: world.Block_ID) -> Pass {
 // Upper bound on faces a chunk can emit: every internal block pair contributes
 // at most one face, plus every face on the chunk boundary.
 MAX_FACES :: 3 * world.CHUNK_SIZE * world.CHUNK_SIZE * (world.CHUNK_SIZE - 1) + 6 * world.CHUNK_SIZE * world.CHUNK_SIZE
-#assert(MAX_FACES * 4 <= 65536, "worst-case chunk must fit raylib's u16 indices")
+#assert(MAX_FACES * 4 <= 65536, "worst-case chunk must fit u16 indices")
 
 // Directions and neighbor sets live in world/; aliased here for convenience.
 Face      :: world.Face
@@ -74,7 +69,8 @@ tile_coords :: #force_inline proc "contextless" (tile: world.Tile) -> [2]f32 {
 }
 
 // Fixed per-direction brightness (out of 255) so cube edges are readable
-// without lighting: top brightest, bottom darkest.
+// without lighting: top brightest, bottom darkest. Applied by the shader
+// (shade_table), not stored in vertices.
 @(rodata)
 FACE_SHADE := [Face]u16 {
 	.Pos_Y = 255,
@@ -99,6 +95,19 @@ FACE_SHADE := [Face]u16 {
 // (Mikola Lysenko, "Ambient occlusion for Minecraft-like worlds", 0fps.net).
 @(rodata)
 AO_BRIGHTNESS := [4]f32{0.45, 0.65, 0.82, 1.0}
+
+// Vertex brightness for each face direction and AO value, index
+// int(face) * 4 + ao, out of 1: FACE_SHADE × AO_BRIGHTNESS rounded down to
+// a byte (as the old baked vertex colors were). The renderer sends it to the
+// shader (`shadeTable`), which looks it up from the vertex's face and AO.
+shade_table :: proc "contextless" () -> (t: [len(Face) * 4]f32) {
+	for face in Face {
+		for ao in 0 ..< 4 {
+			t[int(face) * 4 + ao] = f32(u8(f32(FACE_SHADE[face]) * AO_BRIGHTNESS[ao])) / 255
+		}
+	}
+	return
+}
 
 vertex_ao :: #force_inline proc "contextless" (side1, side2, corner: bool, front := false) -> u8 {
 	if (side1 && side2) || (front && corner) {
@@ -176,12 +185,7 @@ Neighborhood :: world.Neighborhood
 // avoids reallocating once its buffers have grown.
 build_chunk_mesh_neighborhood :: proc(n: ^Neighborhood, out: ^Chunk_Mesh) {
 	for &m in out {
-		clear(&m.positions)
-		clear(&m.normals)
-		clear(&m.texcoords)
-		clear(&m.tiles)
-		clear(&m.colors)
-		clear(&m.indices)
+		clear(&m.vertices)
 	}
 
 	chunk := n[world.neighborhood_index({0, 0, 0})]
@@ -338,43 +342,41 @@ emit_fluid_faces :: proc(out: ^Mesh_Data, pad: ^Padded, pos: [3]i32, id: world.B
 // the height so the texture isn't squashed. Translucent blocks get no AO
 // (shore blocks would smudge the water surface).
 emit_face :: proc(out: ^Mesh_Data, pad: ^Padded, pos: [3]i32, face: Face, id: world.Block_ID, lo, hi: f32) {
-	base := u16(len(out.positions))
-	origin := linalg.array_cast(pos, f32)
-	normal := linalg.array_cast(world.FACE_NORMALS[face], f32)
-	tile := tile_coords(world.block_tile(id, face))
+	// Heights in 1/16 block (POSITION_SCALE): exact for every extent in use
+	// (0, FLUID_SURFACE = 14/16, 1).
+	lo16, hi16 := u16(lo * POSITION_SCALE), u16(hi * POSITION_SCALE)
+	origin := [3]u16{u16(pos.x), u16(pos.y), u16(pos.z)} * POSITION_SCALE
+	tile := world.block_tile(id, face)
 	ao := [4]u8{3, 3, 3, 3}
 	if world.block_props(id).render != .Translucent {
 		ao = face_ao(pad, pos, face)
 	}
 	side := face != .Pos_Y && face != .Neg_Y
+	corners: [4]Vertex
 	for corner, i in FACE_CORNERS[face] {
-		b := u8(f32(FACE_SHADE[face]) * AO_BRIGHTNESS[ao[i]])
-		c := corner
-		c.y = lo if corner.y == 0 else hi
-		uv := FACE_UVS[i]
+		c := [3]u16{u16(corner.x), u16(corner.y), u16(corner.z)} * POSITION_SCALE
+		c.y = lo16 if corner.y == 0 else hi16
+		uv := [2]u16{u16(FACE_UVS[i].x), u16(FACE_UVS[i].y)} * POSITION_SCALE
 		if side {
-			uv.y = 1 - c.y // v = 0 at the top of the tile
+			uv.y = POSITION_SCALE - c.y // v = 0 at the top of the tile
 		}
-		append(&out.positions, origin + c)
-		append(&out.normals, normal)
-		append(&out.texcoords, uv)
-		append(&out.tiles, tile)
-		append(&out.colors, [4]u8{b, b, b, 255})
+		corners[i] = pack_vertex({position = origin + c, uv = uv, face = face, ao = ao[i], tile = tile, sky = MAX_LIGHT})
 	}
-	// Each quad is two triangles, and brightness is interpolated per
-	// triangle. Splitting along the wrong diagonal makes AO look like a
-	// diagonal streak, so split along the diagonal whose corners are darker
-	// in total (it keeps both triangles' gradients consistent). Both
-	// orderings stay counter-clockwise.
+	// Each quad is two triangles (QUAD_INDICES: 0-1-2, 0-2-3), and brightness
+	// is interpolated per triangle. Splitting along the wrong diagonal makes
+	// AO look like a diagonal streak, so split along the diagonal whose
+	// corners are darker in total (it keeps both triangles' gradients
+	// consistent): when that's 1-3, the corners are emitted rotated by one
+	// (1, 2, 3, 0), which splits along 1-3 and stays counter-clockwise.
 	if u32(ao[0]) + u32(ao[2]) > u32(ao[1]) + u32(ao[3]) {
-		append(&out.indices, base + 1, base + 2, base + 3, base + 1, base + 3, base)
+		append(&out.vertices, corners[1], corners[2], corners[3], corners[0])
 	} else {
-		append(&out.indices, base, base + 1, base + 2, base, base + 2, base + 3)
+		append(&out.vertices, corners[0], corners[1], corners[2], corners[3])
 	}
 }
 
 face_count :: proc(m: ^Mesh_Data) -> int {
-	return len(m.indices) / 6
+	return len(m.vertices) / 4
 }
 
 // Faces in every pass.
@@ -392,10 +394,5 @@ chunk_mesh_destroy :: proc(m: ^Chunk_Mesh) {
 }
 
 mesh_data_destroy :: proc(m: ^Mesh_Data) {
-	delete(m.positions)
-	delete(m.normals)
-	delete(m.texcoords)
-	delete(m.tiles)
-	delete(m.colors)
-	delete(m.indices)
+	delete(m.vertices)
 }

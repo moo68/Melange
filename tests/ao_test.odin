@@ -23,8 +23,8 @@ find_face :: proc(m: ^mesh.Mesh_Data, pos: [3]i32, face: world.Face) -> (first: 
 	n := linalg.array_cast(world.FACE_NORMALS[face], f32)
 	want_center := linalg.array_cast(pos, f32) + 0.5 + n * 0.5
 	for f in 0 ..< mesh.face_count(m) {
-		c := (m.positions[f * 4] + m.positions[f * 4 + 1] + m.positions[f * 4 + 2] + m.positions[f * 4 + 3]) / 4
-		if m.normals[f * 4] == n && c == want_center {
+		c := (vpos(m, f * 4) + vpos(m, f * 4 + 1) + vpos(m, f * 4 + 2) + vpos(m, f * 4 + 3)) / 4
+		if vnormal(m, f * 4) == n && c == want_center {
 			return f * 4, true
 		}
 	}
@@ -34,8 +34,8 @@ find_face :: proc(m: ^mesh.Mesh_Data, pos: [3]i32, face: world.Face) -> (first: 
 // Brightness of the face vertex at corner position `corner` (chunk-local).
 vertex_brightness :: proc(t: ^testing.T, m: ^mesh.Mesh_Data, first: int, corner: [3]f32) -> u8 {
 	for v in first ..< first + 4 {
-		if m.positions[v] == corner {
-			return m.colors[v].r
+		if vpos(m, v) == corner {
+			return vbright(m, v)
 		}
 	}
 	testing.fail_now(t, "corner not found on face")
@@ -48,11 +48,11 @@ shade_with_ao :: proc(face: world.Face, ao: int) -> u8 {
 // Every triangle must still wind counter-clockwise from outside, including
 // the ones whose quad diagonal was flipped for AO.
 expect_ccw :: proc(t: ^testing.T, m: ^mesh.Mesh_Data) {
-	for i := 0; i < len(m.indices); i += 3 {
-		a := m.positions[m.indices[i]]
-		b := m.positions[m.indices[i + 1]]
-		d := m.positions[m.indices[i + 2]]
-		if linalg.dot(linalg.cross(b - a, d - a), m.normals[m.indices[i]]) <= 0 {
+	for i := 0; i < index_count(m); i += 3 {
+		a := vpos(m, index_at(i))
+		b := vpos(m, index_at(i + 1))
+		d := vpos(m, index_at(i + 2))
+		if linalg.dot(linalg.cross(b - a, d - a), vnormal(m, index_at(i))) <= 0 {
 			testing.fail_now(t, "a triangle winds the wrong way")
 		}
 	}
@@ -71,7 +71,7 @@ isolated_block_is_fully_lit :: proc(t: ^testing.T) {
 		first, ok := find_face(m, {5, 5, 5}, face)
 		testing.expect(t, ok)
 		for v in first ..< first + 4 {
-			testing.expect_value(t, m.colors[v].r, shade_with_ao(face, 3))
+			testing.expect_value(t, vbright(m, v), shade_with_ao(face, 3))
 		}
 	}
 }
@@ -157,14 +157,14 @@ ao_reads_diagonal_neighbor_chunk :: proc(t: ^testing.T) {
 	// Quad split: the dark vertex must be in both triangles.
 	dark := -1
 	for v in first ..< first + 4 {
-		if m.positions[v] == {16, 6, 16} {
+		if vpos(m, v) == {16, 6, 16} {
 			dark = v
 		}
 	}
 	face_index := first / 4
 	tri_has :: proc(m: ^mesh.Mesh_Data, tri: int, v: int) -> bool {
 		for k in 0 ..< 3 {
-			if int(m.indices[tri * 3 + k]) == v {
+			if index_at(tri * 3 + k) == v {
 				return true
 			}
 		}

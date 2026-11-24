@@ -13,6 +13,10 @@ Options :: struct {
 	world:    string, // --world NAME: open or create saves/NAME ("" = unsaved world)
 	frames:   int, // quit after this many frames (0 = run until closed); for repeatable profiling runs
 	direct:   bool, // any of --world/--seed/--frames: skip the title screen, straight into the game
+	// --screenshot PATH (needs --frames): save the last frame as a PNG, with
+	// mouse look off, so runs with the same seed give the same picture
+	// (for before/after pixel diffs of rendering changes).
+	screenshot: string,
 }
 
 // Parses command-line options. Returns ok = false (after printing why) on bad input.
@@ -57,10 +61,21 @@ parse_args :: proc() -> (opts: Options, ok: bool) {
 				return opts, false
 			}
 			opts.frames = frames
+		case "--screenshot":
+			if i + 1 >= len(args) {
+				fmt.eprintln("--screenshot needs a path")
+				return opts, false
+			}
+			i += 1
+			opts.screenshot = args[i]
 		case:
-			fmt.eprintfln("unknown argument '%s' (supported: --world NAME, --seed N, --frames N)", args[i])
+			fmt.eprintfln("unknown argument '%s' (supported: --world NAME, --seed N, --frames N, --screenshot PATH)", args[i])
 			return opts, false
 		}
+	}
+	if opts.screenshot != "" && opts.frames == 0 {
+		fmt.eprintln("--screenshot needs --frames N (the frame to save is the last one)")
+		return opts, false
 	}
 	opts.direct = opts.world != "" || opts.seed_set || opts.frames > 0
 	return opts, true

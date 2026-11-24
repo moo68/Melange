@@ -30,6 +30,7 @@ Game :: struct {
 	// Block editing waits until both mouse buttons are up after the mouse
 	// is captured, so the click that resumed the game can't break a block.
 	edit_blocked:        bool,
+	no_mouse_look:       bool, // --screenshot runs: the view stays as spawned
 	// This frame's view, for game_draw.
 	camera:              rl.Camera3D,
 	target:              geom.Ray_Hit,
@@ -95,7 +96,7 @@ game_release_mouse :: proc(_: ^Game) {
 // One frame of play: input, physics, editing, streaming, meshing, autosave.
 // Returns false if streaming failed (after printing why).
 game_update :: proc(g: ^Game, r: ^render.Renderer, cfg: settings.Settings) -> bool {
-	player.update_look(&g.pl, g.ignore_mouse_frames == 0, cfg.mouse_sensitivity)
+	player.update_look(&g.pl, g.ignore_mouse_frames == 0 && !g.no_mouse_look, cfg.mouse_sensitivity)
 	g.ignore_mouse_frames = max(g.ignore_mouse_frames - 1, 0)
 	if rl.IsKeyPressed(.F3) {
 		g.debug = !g.debug

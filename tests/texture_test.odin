@@ -28,7 +28,7 @@ expect_block_tiles :: proc(t: ^testing.T, id: world.Block_ID, expected: [world.F
 	testing.expect_value(t, mesh.face_count(m), 6)
 
 	for f in 0 ..< mesh.face_count(m) {
-		n := m.normals[f * 4]
+		n := vnormal(m, f * 4)
 		face: world.Face
 		for candidate in world.Face {
 			fn := world.FACE_NORMALS[candidate]
@@ -39,12 +39,12 @@ expect_block_tiles :: proc(t: ^testing.T, id: world.Block_ID, expected: [world.F
 		}
 		seen: [4]bool // which of the 4 tile corners appear
 		for v in f * 4 ..< f * 4 + 4 {
-			testing.expectf(t, m.tiles[v] == mesh.tile_coords(expected[face]), "block %v face %v: wrong tile %v", id, face, m.tiles[v])
-			uv := m.texcoords[v]
+			testing.expectf(t, vtile(m, v) == mesh.tile_coords(expected[face]), "block %v face %v: wrong tile %v", id, face, vtile(m, v))
+			uv := vuv(m, v)
 			testing.expectf(t, (uv.x == 0 || uv.x == 1) && (uv.y == 0 || uv.y == 1), "block %v face %v: uv %v not a tile corner", id, face, uv)
 			seen[int(uv.x) + 2 * int(uv.y)] = true
 			if face != .Pos_Y && face != .Neg_Y {
-				is_top := m.positions[v].y > 4.5
+				is_top := vpos(m, v).y > 4.5
 				testing.expectf(t, (uv.y == 0) == is_top, "block %v face %v: tile is upside down", id, face)
 			}
 		}

@@ -1,28 +1,42 @@
 #version 330
 
-// Chunk vertex shader. Attribute and uniform names are raylib's defaults, so
-// LoadShader binds them automatically and DrawMesh fills mvp/matModel.
+// Chunk vertex shader. One packed vertex attribute (mesh.Vertex: 4 x u16,
+// read as floats, which are exact); unpacked here exactly like
+// mesh.unpack_vertex (keep the two in sync):
+//   x: pos.x (9 bits) | u (5) << 9
+//   y: pos.y (9)      | v (5) << 9 | ao (2) << 14
+//   z: pos.z (9)      | face (3) << 9 | sky light (4) << 12
+//   w: tile (8)       | block light (4) << 8
+// Positions are chunk-local in 1/16 block, UVs in 1/16 tile. `vertexPosition`
+// is raylib's default attribute name (bound to location 0).
 
-in vec3 vertexPosition;
-in vec2 vertexTexCoord;  // position within the face's tile, 0..1
-in vec2 vertexTexCoord2; // atlas tile (column, row)
-in vec4 vertexColor;
+in vec4 vertexPosition;
 
-uniform mat4 mvp;
-uniform mat4 matModel;
+uniform mat4 mvp;          // projection × view (positions are world space)
+uniform vec3 chunkOrigin;  // world position of the chunk's (0, 0, 0) corner
+// Brightness per face direction and AO value, index face * 4 + ao
+// (mesh.shade_table).
+uniform float shadeTable[24];
 
 // `centroid`: with MSAA, evaluate at a sample point inside the triangle
 // instead of the pixel center (which can lie outside it at edges), so the
 // in-tile position stays within 0..1 at face edges.
-centroid out vec2 fragTexCoord;
-flat out vec2 fragTile;
+centroid out vec2 fragTexCoord; // position within the tile, 0..1
+flat out vec2 fragTile;         // atlas tile (column, row)
 out vec4 fragColor;
 out vec3 fragWorldPos;
 
 void main() {
-    fragTexCoord = vertexTexCoord;
-    fragTile = vertexTexCoord2;
-    fragColor = vertexColor;
-    fragWorldPos = (matModel * vec4(vertexPosition, 1.0)).xyz;
-    gl_Position = mvp * vec4(vertexPosition, 1.0);
+    uvec4 w = uvec4(vertexPosition);
+    vec3 local = vec3(w.x & 511u, w.y & 511u, w.z & 511u) / 16.0;
+    fragTexCoord = vec2((w.x >> 9) & 31u, (w.y >> 9) & 31u) / 16.0;
+    uint ao = (w.y >> 14) & 3u;
+    uint face = (w.z >> 9) & 7u;
+    uint tile = w.w & 255u;
+    fragTile = vec2(tile & 15u, tile >> 4);
+    float shade = shadeTable[int(face * 4u + ao)];
+    fragColor = vec4(shade, shade, shade, 1.0);
+    vec3 world = chunkOrigin + local;
+    fragWorldPos = world;
+    gl_Position = mvp * vec4(world, 1.0);
 }

@@ -2,11 +2,13 @@ package main
 
 import "core:fmt"
 import "core:mem"
+import "core:strings"
 import "melange:prof"
 import "melange:render"
 import "melange:save"
 import "melange:settings"
 import rl "third_party:raylib"
+import "third_party:raylib/rlgl"
 
 // Written by `./run.sh profile` builds (-define:PROFILE=true); open it in Spall.
 TRACE_PATH :: "build/trace.spall"
@@ -73,6 +75,9 @@ main :: proc() {
 	case .Shader:
 		fmt.eprintln("failed to load chunk shader", render.CHUNK_SHADER_VS, "/", render.CHUNK_SHADER_FS, "(see raylib log above)")
 		return
+	case .GL:
+		fmt.eprintln("OpenGL function glDrawElements not found")
+		return
 	}
 	defer render.renderer_destroy(&r)
 
@@ -87,6 +92,7 @@ main :: proc() {
 		if game_open(&game, request_from_opts(opts), cfg) != "" {
 			return
 		}
+		game.no_mouse_look = opts.screenshot != ""
 		has_game = true
 		screen = .Playing
 	}
@@ -137,6 +143,9 @@ main :: proc() {
 				game_draw(&game, &r, false)
 			}
 			settings_action = draw_settings(&cfg, has_game)
+		}
+		if opts.screenshot != "" && frame == opts.frames - 1 {
+			save_screenshot(opts.screenshot)
 		}
 		// Swaps buffers: includes the vsync wait and any GPU sync.
 		prof.begin("EndDrawing")
@@ -232,6 +241,19 @@ main :: proc() {
 	// Closing the window, Quit, --frames, or a streaming error.
 	if has_game {
 		game_close(&game, &r)
+	}
+}
+
+// Saves what's been drawn this frame (before the swap) as a PNG.
+@(private = "file")
+save_screenshot :: proc(path: string) {
+	rlgl.DrawRenderBatchActive() // raylib batches 2D/immediate drawing
+	img := rl.LoadImageFromScreen()
+	defer rl.UnloadImage(img)
+	if rl.ExportImage(img, strings.clone_to_cstring(path, context.temp_allocator)) {
+		fmt.println("screenshot saved to", path)
+	} else {
+		fmt.eprintln("couldn't save screenshot to", path)
 	}
 }
 

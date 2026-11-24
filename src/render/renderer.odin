@@ -1,7 +1,6 @@
 package render
 
 import "core:fmt"
-import "core:mem"
 import "core:os"
 import "core:strings"
 import "core:slice"
@@ -25,9 +24,16 @@ CHUNK_SHADER_FS  :: "assets/shaders/chunk.fs"
 // Clear color, and the color terrain fades into with distance.
 SKY_COLOR :: rl.Color{world.SKY_COLOR.r, world.SKY_COLOR.g, world.SKY_COLOR.b, 255}
 
-// A chunk's GPU meshes, one per pass; a pass without faces has a zero Mesh
-// (vertexCount 0, never uploaded).
-Chunk_Meshes :: [mesh.Pass]rl.Mesh
+// One chunk pass on the GPU: a vertex array object with its packed vertex
+// buffer (mesh.Vertex, 8 B each) and the Renderer's shared index buffer.
+// No CPU copy is kept. quads = 0: no faces, nothing allocated.
+GPU_Mesh :: struct {
+	vao, vbo: u32,
+	quads:    i32,
+}
+
+// A chunk's GPU meshes, one per pass.
+Chunk_Meshes :: [mesh.Pass]GPU_Mesh
 
 // The chunk shader for one pass: chunk.fs compiled with `#define CUTOUT`
 // (alpha test with discard) or `#define TRANSLUCENT` (outputs the texel's
@@ -35,6 +41,9 @@ Chunk_Meshes :: [mesh.Pass]rl.Mesh
 // depth testing for most of the world.
 Pass_Shader :: struct {
 	shader:         rl.Shader,
+	loc_mvp:        i32,
+	loc_chunk_origin: i32,
+	loc_texture:    i32,
 	loc_camera_pos: i32,
 	loc_fog_color:  i32,
 	loc_fog_start:  i32,
@@ -60,18 +69,30 @@ Polygon_Offset_Procs :: struct {
 	offset:  proc "c" (factor, units: f32),
 }
 
+// glDrawElements, called directly so the index type is certainly u16 (the
+// shared index buffer); looked up like the polygon offset procs.
+GL_TRIANGLES      :: 0x0004
+GL_UNSIGNED_SHORT :: 0x1403
+Draw_Elements_Proc :: proc "c" (mode: u32, count: i32, type: u32, indices: rawptr)
+
+// The packed vertex attribute (mesh.Vertex as one vec4 of unsigned shorts).
+// raylib binds `vertexPosition` to location 0 when it links a shader;
+// load_pass_shader checks that.
+VERTEX_ATTRIB_LOCATION :: 0
+
 // GPU-side state for all chunk meshes. Owns raylib resources, so it must be
 // created after InitWindow and destroyed before CloseWindow.
 Renderer :: struct {
 	// Only chunks with at least one face (in any pass) have an entry.
 	meshes:        map[[3]i32]Chunk_Meshes,
-	material:      rl.Material,
 	atlas:         rl.Texture2D, // block texture atlas, owned by the Renderer
 	// Chunk shaders (assets/shaders/chunk.*), owned by the Renderer.
 	shaders:       [mesh.Pass]Pass_Shader,
-	// What LoadMaterialDefault put in the material, restored before
-	// UnloadMaterial so it doesn't also unload our shader.
-	default_shader: rl.Shader,
+	// The index buffer every chunk mesh draws with (mesh.quad_indices for
+	// mesh.MAX_FACES faces, 147 KB).
+	quad_ebo:      u32,
+	draw_elements: Draw_Elements_Proc,
+	gpu_bytes:     int, // vertex buffer bytes of all chunk meshes
 	// Reused for every rebuild: no per-chunk Odin allocations once grown.
 	scratch:       mesh.Chunk_Mesh,
 	// nil procs if the GL functions weren't found: water then just z-fights
@@ -92,6 +113,7 @@ Renderer :: struct {
 
 Stats :: struct {
 	draw_calls:     int, // last frame, all passes
+	vertices:       int, // in all chunk meshes now
 	culled:         int, // last frame: meshes skipped by frustum culling
 	faces_drawn:    int, // last frame
 	remeshed:       int, // last frame
@@ -103,6 +125,7 @@ Init_Error :: enum {
 	None,
 	Atlas,  // ATLAS_PATH missing or unreadable
 	Shader, // chunk shader missing or failed to compile (raylib logs the GLSL error)
+	GL,     // glDrawElements not found
 }
 
 // Loads the atlas and chunk shader. On error nothing is left allocated.
@@ -130,15 +153,30 @@ renderer_init :: proc(r: ^Renderer, allocator := context.allocator) -> Init_Erro
 		return .Shader
 	}
 
+	r.draw_elements = auto_cast rlgl.GetProcAddress("glDrawElements")
+	if r.draw_elements == nil {
+		for pass in mesh.Pass {
+			rl.UnloadShader(r.shaders[pass].shader)
+		}
+		rl.UnloadTexture(r.atlas)
+		r.shaders = {}
+		return .GL
+	}
+	indices := make([]u16, mesh.MAX_FACES * 6, context.temp_allocator)
+	mesh.quad_indices(indices)
+	r.quad_ebo = rlgl.LoadVertexBufferElement(raw_data(indices), i32(len(indices) * size_of(u16)), false)
+	rlgl.DisableVertexBufferElement()
+	table := mesh.shade_table()
+	for &ps in r.shaders {
+		loc := rl.GetShaderLocation(ps.shader, "shadeTable")
+		rl.SetShaderValueV(ps.shader, loc, &table, .FLOAT, i32(len(table)))
+	}
+
 	r.meshes = make(map[[3]i32]Chunk_Meshes, allocator)
 	r.cutout_visible = make([dynamic][3]i32, allocator)
 	r.translucent_visible = make([dynamic]world.Chunk_Distance, allocator)
 	r.dirty = make([dynamic][3]i32, allocator)
 	r.order = make([dynamic]world.Queued_Chunk, allocator)
-	r.material = rl.LoadMaterialDefault()
-	r.default_shader = r.material.shader
-	r.material.shader = r.shaders[.Opaque].shader
-	r.material.maps[rl.MaterialMapIndex.ALBEDO].texture = r.atlas
 	r.remesh_budget = DEFAULT_REMESH_BUDGET
 	r.gl_offset = {
 		enable  = auto_cast rlgl.GetProcAddress("glEnable"),
@@ -187,6 +225,13 @@ load_pass_shader :: proc(pass: mesh.Pass) -> (ps: Pass_Shader, ok: bool) {
 	if !rl.IsShaderValid(ps.shader) || ps.shader.id == rlgl.GetShaderIdDefault() {
 		return {}, false
 	}
+	if rl.GetShaderLocationAttrib(ps.shader, "vertexPosition") != VERTEX_ATTRIB_LOCATION {
+		rl.UnloadShader(ps.shader)
+		return {}, false
+	}
+	ps.loc_mvp = rl.GetShaderLocation(ps.shader, "mvp")
+	ps.loc_chunk_origin = rl.GetShaderLocation(ps.shader, "chunkOrigin")
+	ps.loc_texture = rl.GetShaderLocation(ps.shader, "texture0")
 	ps.loc_camera_pos = rl.GetShaderLocation(ps.shader, "cameraPos")
 	ps.loc_fog_color = rl.GetShaderLocation(ps.shader, "fogColor")
 	ps.loc_fog_start = rl.GetShaderLocation(ps.shader, "fogStart")
@@ -223,7 +268,7 @@ renderer_clear_color :: proc(r: ^Renderer) -> rl.Color {
 // atlas, fog and scratch buffers stay for the next world.
 renderer_clear_chunks :: proc(r: ^Renderer) {
 	for _, &m in r.meshes {
-		unload_chunk_meshes(&m)
+		unload_chunk_meshes(r, &m)
 	}
 	clear(&r.meshes)
 	clear(&r.dirty)
@@ -233,7 +278,7 @@ renderer_clear_chunks :: proc(r: ^Renderer) {
 
 renderer_destroy :: proc(r: ^Renderer) {
 	for _, &m in r.meshes {
-		unload_chunk_meshes(&m)
+		unload_chunk_meshes(r, &m)
 	}
 	delete(r.meshes)
 	delete(r.dirty)
@@ -241,12 +286,7 @@ renderer_destroy :: proc(r: ^Renderer) {
 	delete(r.cutout_visible)
 	delete(r.translucent_visible)
 	mesh.chunk_mesh_destroy(&r.scratch)
-	// UnloadMaterial also unloads a non-default shader and any non-default
-	// textures in its maps, so put the defaults back first; our shader and
-	// atlas are unloaded exactly once, here.
-	r.material.shader = r.default_shader
-	r.material.maps[rl.MaterialMapIndex.ALBEDO].texture.id = rlgl.GetTextureIdDefault()
-	rl.UnloadMaterial(r.material)
+	rlgl.UnloadVertexBuffer(r.quad_ebo)
 	for ps in r.shaders {
 		rl.UnloadShader(ps.shader)
 	}
@@ -303,16 +343,19 @@ renderer_forget_chunks :: proc(r: ^Renderer, coords: [][3]i32) {
 // Frees a chunk's GPU mesh. Call when the world unloads that chunk.
 renderer_forget_chunk :: proc(r: ^Renderer, coord: [3]i32) {
 	if m, ok := &r.meshes[coord]; ok {
-		unload_chunk_meshes(m)
+		unload_chunk_meshes(r, m)
 		delete_key(&r.meshes, coord)
 	}
 }
 
 @(private)
-unload_chunk_meshes :: proc(m: ^Chunk_Meshes) {
+unload_chunk_meshes :: proc(r: ^Renderer, m: ^Chunk_Meshes) {
 	for &p in m {
-		if p.vertexCount > 0 {
-			rl.UnloadMesh(p)
+		if p.quads > 0 {
+			rlgl.UnloadVertexArray(p.vao)
+			rlgl.UnloadVertexBuffer(p.vbo)
+			r.gpu_bytes -= int(p.quads) * 4 * size_of(mesh.Vertex)
+			r.stats.vertices -= int(p.quads) * 4
 		}
 		p = {}
 	}
@@ -329,17 +372,25 @@ unload_chunk_meshes :: proc(m: ^Chunk_Meshes) {
 // invisible.
 renderer_draw :: proc(r: ^Renderer, frustum: ^geom.Frustum, camera_pos: [3]f32) {
 	prof.scope("renderer_draw")
+	// Our draws bypass raylib's batch: flush whatever it has queued first.
+	rlgl.DrawRenderBatchActive()
+	// Set up by BeginMode3D; chunk positions are world space (chunkOrigin +
+	// local), so this is the whole transform.
+	// rl.Matrix is the math matrix (row-major), so this is projection × view;
+	// rl.MatrixMultiply(view, projection) would be the C idiom's order, not
+	// the binding's (it's plain left * right).
+	mvp := rlgl.GetMatrixProjection() * rlgl.GetMatrixModelview()
 	camera_pos := camera_pos
-	for &ps in r.shaders {
-		rl.SetShaderValue(ps.shader, ps.loc_camera_pos, &camera_pos, .VEC3)
-	}
 
 	r.stats.draw_calls = 0
 	r.stats.culled = 0
 	r.stats.faces_drawn = 0
 	clear(&r.cutout_visible)
 	clear(&r.translucent_visible)
-	r.material.shader = r.shaders[.Opaque].shader
+	rlgl.ActiveTextureSlot(0)
+	rlgl.EnableTexture(r.atlas.id)
+
+	begin_pass(r, .Opaque, &mvp, &camera_pos)
 	for coord, &m in r.meshes {
 		o := world.chunk_origin(coord)
 		box_min := [3]f32{f32(o.x), f32(o.y), f32(o.z)}
@@ -347,22 +398,24 @@ renderer_draw :: proc(r: ^Renderer, frustum: ^geom.Frustum, camera_pos: [3]f32) 
 			r.stats.culled += 1
 			continue
 		}
-		draw_pass_mesh(r, &m[.Opaque], o)
-		if m[.Cutout].vertexCount > 0 {
+		draw_pass_mesh(r, .Opaque, &m[.Opaque], o)
+		if m[.Cutout].quads > 0 {
 			append(&r.cutout_visible, coord)
 		}
-		if m[.Translucent].vertexCount > 0 {
+		if m[.Translucent].quads > 0 {
 			append(&r.translucent_visible, world.Chunk_Distance{coord, world.chunk_center_dist2(coord, camera_pos)})
 		}
 	}
-	r.material.shader = r.shaders[.Cutout].shader
+	begin_pass(r, .Cutout, &mvp, &camera_pos)
 	for coord in r.cutout_visible {
 		m := r.meshes[coord][.Cutout]
-		draw_pass_mesh(r, &m, world.chunk_origin(coord))
+		draw_pass_mesh(r, .Cutout, &m, world.chunk_origin(coord))
 	}
 	if len(r.translucent_visible) > 0 {
 		world.sort_far_first(r.translucent_visible[:])
-		r.material.shader = r.shaders[.Translucent].shader
+		begin_pass(r, .Translucent, &mvp, &camera_pos)
+		// raylib keeps GL_BLEND on with alpha blending (its default mode);
+		// set it explicitly anyway, it only flushes the (empty) batch.
 		rl.BeginBlendMode(.ALPHA)
 		rlgl.DisableDepthMask()
 		rlgl.DisableBackfaceCulling()
@@ -372,7 +425,7 @@ renderer_draw :: proc(r: ^Renderer, frustum: ^geom.Frustum, camera_pos: [3]f32) 
 		}
 		for q in r.translucent_visible {
 			m := r.meshes[q.coord][.Translucent]
-			draw_pass_mesh(r, &m, world.chunk_origin(q.coord))
+			draw_pass_mesh(r, .Translucent, &m, world.chunk_origin(q.coord))
 		}
 		if r.gl_offset.offset != nil {
 			r.gl_offset.disable(GL_POLYGON_OFFSET_FILL)
@@ -381,17 +434,34 @@ renderer_draw :: proc(r: ^Renderer, frustum: ^geom.Frustum, camera_pos: [3]f32) 
 		rlgl.EnableDepthMask()
 		rl.EndBlendMode()
 	}
-	r.material.shader = r.shaders[.Opaque].shader
+	rlgl.DisableVertexArray()
+	rlgl.DisableShader()
+	rlgl.DisableTexture()
 }
 
+// Activates a pass's shader with this frame's per-pass uniforms.
 @(private)
-draw_pass_mesh :: proc(r: ^Renderer, m: ^rl.Mesh, o: [3]i32) {
-	if m.vertexCount == 0 {
+begin_pass :: proc(r: ^Renderer, pass: mesh.Pass, mvp: ^rl.Matrix, camera_pos: ^[3]f32) {
+	ps := &r.shaders[pass]
+	rlgl.EnableShader(ps.shader.id)
+	rlgl.SetUniformMatrix(ps.loc_mvp, mvp^)
+	rlgl.SetUniform(ps.loc_camera_pos, camera_pos, i32(rl.ShaderUniformDataType.VEC3), 1)
+	slot: i32 = 0
+	rlgl.SetUniform(ps.loc_texture, &slot, i32(rl.ShaderUniformDataType.INT), 1)
+}
+
+// Draws one chunk pass with its pass's shader active (begin_pass).
+@(private)
+draw_pass_mesh :: proc(r: ^Renderer, pass: mesh.Pass, m: ^GPU_Mesh, o: [3]i32) {
+	if m.quads == 0 {
 		return
 	}
-	rl.DrawMesh(m^, r.material, rl.MatrixTranslate(f32(o.x), f32(o.y), f32(o.z)))
+	origin := [3]f32{f32(o.x), f32(o.y), f32(o.z)}
+	rlgl.SetUniform(r.shaders[pass].loc_chunk_origin, &origin, i32(rl.ShaderUniformDataType.VEC3), 1)
+	rlgl.EnableVertexArray(m.vao)
+	r.draw_elements(GL_TRIANGLES, m.quads * 6, GL_UNSIGNED_SHORT, nil)
 	r.stats.draw_calls += 1
-	r.stats.faces_drawn += int(m.triangleCount) / 2
+	r.stats.faces_drawn += int(m.quads)
 }
 
 // Rebuilds one chunk's mesh. Returns false if it was skipped without meshing
@@ -420,7 +490,7 @@ remesh_chunk :: proc(r: ^Renderer, w: ^world.World, coord: [3]i32) -> bool {
 		gpu: Chunk_Meshes
 		for pass in mesh.Pass {
 			if mesh.face_count(&r.scratch[pass]) > 0 {
-				gpu[pass] = upload(&r.scratch[pass])
+				gpu[pass] = upload(r, &r.scratch[pass])
 			}
 		}
 		r.meshes[coord] = gpu
@@ -428,33 +498,25 @@ remesh_chunk :: proc(r: ^Renderer, w: ^world.World, coord: [3]i32) -> bool {
 	return true
 }
 
-// Copies Mesh_Data into raylib-allocated buffers and uploads them.
-//
-// Why copy: UnloadMesh frees the Mesh's CPU arrays with raylib's own free(),
-// so they must come from raylib's allocator (MemAlloc), never Odin's. And the
-// pointers can't simply be nil'd after upload, because DrawMesh uses
-// `indices != nil` to pick indexed drawing. (Dropping this CPU copy is a
-// later memory optimization.)
+// Uploads one pass's packed vertices into a new vertex array object bound
+// to the shared index buffer. The CPU data stays in the caller's scratch
+// mesh (reused), so nothing is kept per chunk on the CPU.
 @(private)
-upload :: proc(d: ^mesh.Mesh_Data) -> rl.Mesh {
-	m: rl.Mesh
-	m.vertexCount = i32(len(d.positions))
-	m.triangleCount = i32(len(d.indices) / 3)
-	m.vertices = raylib_copy(f32, d.positions[:])
-	m.normals = raylib_copy(f32, d.normals[:])
-	m.texcoords = raylib_copy(f32, d.texcoords[:])
-	m.texcoords2 = raylib_copy(f32, d.tiles[:]) // -> vertexTexCoord2 in the shader
-	m.colors = raylib_copy(u8, d.colors[:])
-	m.indices = raylib_copy(u16, d.indices[:])
-	rl.UploadMesh(&m, false)
-	return m
-}
-
-// Copies a slice into memory from raylib's allocator, viewed as [^]T.
-@(private)
-raylib_copy :: proc($T: typeid, src: []$E) -> [^]T {
-	bytes := len(src) * size_of(E)
-	dst := rl.MemAlloc(u32(bytes))
-	mem.copy(dst, raw_data(src), bytes)
-	return cast([^]T)dst
+upload :: proc(r: ^Renderer, d: ^mesh.Mesh_Data) -> (g: GPU_Mesh) {
+	g.quads = i32(mesh.face_count(d))
+	bytes := len(d.vertices) * size_of(mesh.Vertex)
+	g.vao = rlgl.LoadVertexArray()
+	rlgl.EnableVertexArray(g.vao)
+	g.vbo = rlgl.LoadVertexBuffer(raw_data(d.vertices), i32(bytes), false)
+	rlgl.SetVertexAttribute(VERTEX_ATTRIB_LOCATION, 4, GL_UNSIGNED_SHORT, false, size_of(mesh.Vertex), 0)
+	rlgl.EnableVertexAttribute(VERTEX_ATTRIB_LOCATION)
+	rlgl.EnableVertexBufferElement(r.quad_ebo) // recorded in the VAO
+	// Unbind the VAO first: unbinding the index buffer while it's bound
+	// would remove it from the VAO.
+	rlgl.DisableVertexArray()
+	rlgl.DisableVertexBuffer()
+	rlgl.DisableVertexBufferElement()
+	r.gpu_bytes += bytes
+	r.stats.vertices += len(d.vertices)
+	return
 }

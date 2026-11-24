@@ -87,7 +87,7 @@ expected_corners :: proc(pos: [3]i32, face: world.Face, lo, hi: f32) -> (out: [4
 
 has_quad :: proc(m: ^mesh.Mesh_Data, corners: [4][3]f32) -> bool {
 	for f in 0 ..< mesh.face_count(m) {
-		if m.positions[f * 4] == corners[0] && m.positions[f * 4 + 1] == corners[1] && m.positions[f * 4 + 2] == corners[2] && m.positions[f * 4 + 3] == corners[3] {
+		if vpos(m, f * 4) == corners[0] && vpos(m, f * 4 + 1) == corners[1] && vpos(m, f * 4 + 2) == corners[2] && vpos(m, f * 4 + 3) == corners[3] {
 			return true
 		}
 	}
@@ -111,17 +111,17 @@ single_water_block :: proc(t: ^testing.T) {
 		}
 		testing.expectf(t, has_quad(m, expected_corners({5, 5, 5}, face, lo, hi)), "%v face at %v..%v", face, lo, hi)
 	}
-	for v in 0 ..< len(m.positions) {
+	for v in 0 ..< len(m.vertices) {
 		face: world.Face
 		for f in world.Face {
-			if m.normals[v] == linalg.array_cast(world.FACE_NORMALS[f], f32) {
+			if vnormal(m, v) == linalg.array_cast(world.FACE_NORMALS[f], f32) {
 				face = f
 			}
 		}
-		testing.expectf(t, m.colors[v].r == u8(mesh.FACE_SHADE[face]), "water has no AO: %v", m.colors[v].r)
+		testing.expectf(t, vbright(m, v) == u8(mesh.FACE_SHADE[face]), "water has no AO: %v", vbright(m, v))
 		// Side faces: the texture is cut, not squashed (v follows the height).
 		if face != .Pos_Y && face != .Neg_Y {
-			testing.expect_value(t, m.texcoords[v].y, 1 - (m.positions[v].y - 5))
+			testing.expect_value(t, vuv(m, v).y, 1 - (vpos(m, v).y - 5))
 		}
 	}
 	expect_ccw(t, m)
@@ -269,12 +269,12 @@ water_never_overlaps_coplanar_faces :: proc(t: ^testing.T) {
 		lo, hi:   [2]f32,
 	}
 	rect_of :: proc(m: ^mesh.Mesh_Data, f: int) -> (r: Rect) {
-		n := m.normals[f * 4]
+		n := vnormal(m, f * 4)
 		r.axis = 0 if n.x != 0 else (1 if n.y != 0 else 2)
-		r.plane = m.positions[f * 4][r.axis]
+		r.plane = vpos(m, f * 4)[r.axis]
 		r.lo, r.hi = {max(f32), max(f32)}, {min(f32), min(f32)}
 		for v in 0 ..< 4 {
-			p := m.positions[f * 4 + v]
+			p := vpos(m, f * 4 + v)
 			a, b := p[(r.axis + 1) % 3], p[(r.axis + 2) % 3]
 			r.lo = {min(r.lo.x, a), min(r.lo.y, b)}
 			r.hi = {max(r.hi.x, a), max(r.hi.y, b)}

@@ -69,8 +69,8 @@ cutout_faces_go_into_the_cutout_pass :: proc(t: ^testing.T) {
 		defer mesh.chunk_mesh_destroy(&cm)
 		testing.expect_value(t, mesh.face_count(&cm[.Opaque]), 0)
 		testing.expect_value(t, mesh.face_count(&cm[.Cutout]), 6)
-		for tile in cm[.Cutout].tiles {
-			testing.expect_value(t, tile, mesh.tile_coords(world.TILE_GLASS))
+		for v in 0 ..< len(cm[.Cutout].vertices) {
+			testing.expect_value(t, vtile(&cm[.Cutout], v), mesh.tile_coords(world.TILE_GLASS))
 		}
 	}
 	{
@@ -202,9 +202,9 @@ shared_corners_agree_with_cutout_blocks :: proc(t: ^testing.T) {
 		mesh.build_chunk_mesh(c, &no_neighbors, &cm)
 		clear(&seen)
 		for &m in cm {
-			for v in 0 ..< len(m.positions) {
-				k := Key{m.positions[v], m.normals[v]}
-				b := m.colors[v].r
+			for v in 0 ..< len(m.vertices) {
+				k := Key{vpos(&m, v), vnormal(&m, v)}
+				b := vbright(&m, v)
 				if prev, ok := seen[k]; ok && prev != b {
 					testing.fail_now(t, "coplanar faces disagree on a shared corner's brightness")
 				}
