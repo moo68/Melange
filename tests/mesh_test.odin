@@ -12,10 +12,11 @@ no_neighbors: mesh.Neighbors
 
 // Builds the mesh for `chunk` and returns its face count.
 mesh_faces :: proc(chunk: ^world.Chunk) -> int {
-	m: mesh.Mesh_Data
-	defer mesh.mesh_data_destroy(&m)
-	mesh.build_chunk_mesh(chunk, &no_neighbors, &m)
-	return mesh.face_count(&m)
+	cm: mesh.Chunk_Mesh
+	defer mesh.chunk_mesh_destroy(&cm)
+	m := &cm[.Opaque]
+	mesh.build_chunk_mesh(chunk, &no_neighbors, &cm)
+	return mesh.face_count(m)
 }
 
 @(test)
@@ -31,10 +32,11 @@ single_block_has_six_faces :: proc(t: ^testing.T) {
 	defer free(c)
 	world.chunk_set(c, 5, 5, 5, world.STONE)
 
-	m: mesh.Mesh_Data
-	defer mesh.mesh_data_destroy(&m)
-	mesh.build_chunk_mesh(c, &no_neighbors, &m)
-	testing.expect_value(t, mesh.face_count(&m), 6)
+	cm: mesh.Chunk_Mesh
+	defer mesh.chunk_mesh_destroy(&cm)
+	m := &cm[.Opaque]
+	mesh.build_chunk_mesh(c, &no_neighbors, &cm)
+	testing.expect_value(t, mesh.face_count(m), 6)
 	testing.expect_value(t, len(m.positions), 24)
 	testing.expect_value(t, len(m.indices), 36)
 }
@@ -85,10 +87,11 @@ checkerboard_worst_case_fits_u16 :: proc(t: ^testing.T) {
 			}
 		}
 	}
-	m: mesh.Mesh_Data
-	defer mesh.mesh_data_destroy(&m)
-	mesh.build_chunk_mesh(c, &no_neighbors, &m)
-	testing.expect_value(t, mesh.face_count(&m), 3 * S * S * S)
+	cm: mesh.Chunk_Mesh
+	defer mesh.chunk_mesh_destroy(&cm)
+	m := &cm[.Opaque]
+	mesh.build_chunk_mesh(c, &no_neighbors, &cm)
+	testing.expect_value(t, mesh.face_count(m), 3 * S * S * S)
 	testing.expect(t, len(m.positions) <= 65536, "vertex count overflows u16 indices")
 }
 
@@ -100,9 +103,10 @@ triangles_wind_counter_clockwise :: proc(t: ^testing.T) {
 	defer free(c)
 	world.chunk_set(c, 3, 3, 3, world.STONE)
 
-	m: mesh.Mesh_Data
-	defer mesh.mesh_data_destroy(&m)
-	mesh.build_chunk_mesh(c, &no_neighbors, &m)
+	cm: mesh.Chunk_Mesh
+	defer mesh.chunk_mesh_destroy(&cm)
+	m := &cm[.Opaque]
+	mesh.build_chunk_mesh(c, &no_neighbors, &cm)
 
 	for i := 0; i < len(m.indices); i += 3 {
 		a := m.positions[m.indices[i]]
@@ -120,9 +124,10 @@ rebuild_clears_previous_mesh :: proc(t: ^testing.T) {
 	defer free(c)
 	world.chunk_set(c, 0, 0, 0, world.STONE)
 
-	m: mesh.Mesh_Data
-	defer mesh.mesh_data_destroy(&m)
-	mesh.build_chunk_mesh(c, &no_neighbors, &m)
-	mesh.build_chunk_mesh(c, &no_neighbors, &m)
-	testing.expect_value(t, mesh.face_count(&m), 6)
+	cm: mesh.Chunk_Mesh
+	defer mesh.chunk_mesh_destroy(&cm)
+	m := &cm[.Opaque]
+	mesh.build_chunk_mesh(c, &no_neighbors, &cm)
+	mesh.build_chunk_mesh(c, &no_neighbors, &cm)
+	testing.expect_value(t, mesh.face_count(m), 6)
 }

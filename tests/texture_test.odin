@@ -21,12 +21,13 @@ expect_block_tiles :: proc(t: ^testing.T, id: world.Block_ID, expected: [world.F
 	c := new(world.Chunk)
 	defer free(c)
 	world.chunk_set(c, 4, 4, 4, id)
-	m: mesh.Mesh_Data
-	defer mesh.mesh_data_destroy(&m)
-	mesh.build_chunk_mesh(c, &no_neighbors, &m)
-	testing.expect_value(t, mesh.face_count(&m), 6)
+	cm: mesh.Chunk_Mesh
+	defer mesh.chunk_mesh_destroy(&cm)
+	m := &cm[.Opaque]
+	mesh.build_chunk_mesh(c, &no_neighbors, &cm)
+	testing.expect_value(t, mesh.face_count(m), 6)
 
-	for f in 0 ..< mesh.face_count(&m) {
+	for f in 0 ..< mesh.face_count(m) {
 		n := m.normals[f * 4]
 		face: world.Face
 		for candidate in world.Face {

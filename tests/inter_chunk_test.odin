@@ -26,10 +26,11 @@ fill :: proc(c: ^world.Chunk, id: world.Block_ID) {
 }
 
 faces_with :: proc(c: ^world.Chunk, neighbors: ^mesh.Neighbors) -> int {
-	m: mesh.Mesh_Data
-	defer mesh.mesh_data_destroy(&m)
-	mesh.build_chunk_mesh(c, neighbors, &m)
-	return mesh.face_count(&m)
+	cm: mesh.Chunk_Mesh
+	defer mesh.chunk_mesh_destroy(&cm)
+	m := &cm[.Opaque]
+	mesh.build_chunk_mesh(c, neighbors, &cm)
+	return mesh.face_count(m)
 }
 
 // For each direction: a block on that border is culled by a full neighbor on

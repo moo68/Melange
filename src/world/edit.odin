@@ -5,17 +5,17 @@ import "melange:geom"
 // Block-editing rules, independent of input (player/edit.odin maps mouse
 // buttons onto these).
 
-// Loaded and opaque: what block picking can hit. Unloaded chunks count as empty.
+// Loaded and solid: what block picking can hit. Unloaded chunks count as empty.
 world_is_solid :: proc(w: ^World, b: [3]i32) -> bool {
 	id, loaded := world_get_block(w, b)
-	return loaded && block_is_opaque(id)
+	return loaded && block_is_solid(id)
 }
 
-// What stops a moving body: opaque blocks and, unlike picking, chunks that
+// What stops a moving body: solid blocks and, unlike picking, chunks that
 // aren't loaded yet, so nobody falls or walks into ungenerated space.
 world_blocks_movement :: proc(w: ^World, b: [3]i32) -> bool {
 	id, loaded := world_get_block(w, b)
-	return !loaded || block_is_opaque(id)
+	return !loaded || block_is_solid(id)
 }
 
 // Breaks (sets to air) the block a ray hit. Returns false if nothing changed.

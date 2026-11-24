@@ -63,11 +63,12 @@ isolated_block_is_fully_lit :: proc(t: ^testing.T) {
 	c := new(world.Chunk)
 	defer free(c)
 	world.chunk_set(c, 5, 5, 5, world.STONE)
-	m: mesh.Mesh_Data
-	defer mesh.mesh_data_destroy(&m)
-	mesh.build_chunk_mesh(c, &no_neighbors, &m)
+	cm: mesh.Chunk_Mesh
+	defer mesh.chunk_mesh_destroy(&cm)
+	m := &cm[.Opaque]
+	mesh.build_chunk_mesh(c, &no_neighbors, &cm)
 	for face in world.Face {
-		first, ok := find_face(&m, {5, 5, 5}, face)
+		first, ok := find_face(m, {5, 5, 5}, face)
 		testing.expect(t, ok)
 		for v in first ..< first + 4 {
 			testing.expect_value(t, m.colors[v].r, shade_with_ao(face, 3))
@@ -88,19 +89,20 @@ block_next_to_cube_darkens_touching_edge :: proc(t: ^testing.T) {
 		}
 	}
 	world.chunk_set(c, 5, 5, 5, world.STONE)
-	m: mesh.Mesh_Data
-	defer mesh.mesh_data_destroy(&m)
-	mesh.build_chunk_mesh(c, &no_neighbors, &m)
-	expect_ccw(t, &m)
+	cm: mesh.Chunk_Mesh
+	defer mesh.chunk_mesh_destroy(&cm)
+	m := &cm[.Opaque]
+	mesh.build_chunk_mesh(c, &no_neighbors, &cm)
+	expect_ccw(t, m)
 
-	first, ok := find_face(&m, {6, 4, 5}, .Pos_Y)
+	first, ok := find_face(m, {6, 4, 5}, .Pos_Y)
 	testing.expect(t, ok)
 	// West edge (x = 6) touches the cube at (5, 5, 5): one side solid -> ao 2.
-	testing.expect_value(t, vertex_brightness(t, &m, first, {6, 5, 5}), shade_with_ao(.Pos_Y, 2))
-	testing.expect_value(t, vertex_brightness(t, &m, first, {6, 5, 6}), shade_with_ao(.Pos_Y, 2))
+	testing.expect_value(t, vertex_brightness(t, m, first, {6, 5, 5}), shade_with_ao(.Pos_Y, 2))
+	testing.expect_value(t, vertex_brightness(t, m, first, {6, 5, 6}), shade_with_ao(.Pos_Y, 2))
 	// East edge (x = 7): nothing above -> fully lit.
-	testing.expect_value(t, vertex_brightness(t, &m, first, {7, 5, 5}), shade_with_ao(.Pos_Y, 3))
-	testing.expect_value(t, vertex_brightness(t, &m, first, {7, 5, 6}), shade_with_ao(.Pos_Y, 3))
+	testing.expect_value(t, vertex_brightness(t, m, first, {7, 5, 5}), shade_with_ao(.Pos_Y, 3))
+	testing.expect_value(t, vertex_brightness(t, m, first, {7, 5, 6}), shade_with_ao(.Pos_Y, 3))
 }
 
 // Floor block with walls on its -X and -Z sides: the inside corner vertex
@@ -112,15 +114,16 @@ inside_corner_is_darkest :: proc(t: ^testing.T) {
 	world.chunk_set(c, 5, 4, 5, world.STONE)
 	world.chunk_set(c, 4, 5, 5, world.STONE)
 	world.chunk_set(c, 5, 5, 4, world.STONE)
-	m: mesh.Mesh_Data
-	defer mesh.mesh_data_destroy(&m)
-	mesh.build_chunk_mesh(c, &no_neighbors, &m)
-	expect_ccw(t, &m)
+	cm: mesh.Chunk_Mesh
+	defer mesh.chunk_mesh_destroy(&cm)
+	m := &cm[.Opaque]
+	mesh.build_chunk_mesh(c, &no_neighbors, &cm)
+	expect_ccw(t, m)
 
-	first, ok := find_face(&m, {5, 4, 5}, .Pos_Y)
+	first, ok := find_face(m, {5, 4, 5}, .Pos_Y)
 	testing.expect(t, ok)
-	testing.expect_value(t, vertex_brightness(t, &m, first, {5, 5, 5}), shade_with_ao(.Pos_Y, 0))
-	testing.expect_value(t, vertex_brightness(t, &m, first, {6, 5, 6}), shade_with_ao(.Pos_Y, 3))
+	testing.expect_value(t, vertex_brightness(t, m, first, {5, 5, 5}), shade_with_ao(.Pos_Y, 0))
+	testing.expect_value(t, vertex_brightness(t, m, first, {6, 5, 6}), shade_with_ao(.Pos_Y, 3))
 }
 
 // AO across a chunk *corner*: block at local (15, 5, 15); the only occluder
@@ -140,15 +143,16 @@ ao_reads_diagonal_neighbor_chunk :: proc(t: ^testing.T) {
 	n: world.Neighborhood
 	n[world.neighborhood_index({0, 0, 0})] = center
 	n[world.neighborhood_index({1, 0, 1})] = diagonal
-	m: mesh.Mesh_Data
-	defer mesh.mesh_data_destroy(&m)
-	mesh.build_chunk_mesh_neighborhood(&n, &m)
-	expect_ccw(t, &m)
+	cm: mesh.Chunk_Mesh
+	defer mesh.chunk_mesh_destroy(&cm)
+	m := &cm[.Opaque]
+	mesh.build_chunk_mesh_neighborhood(&n, &cm)
+	expect_ccw(t, m)
 
-	first, ok := find_face(&m, {15, 5, 15}, .Pos_Y)
+	first, ok := find_face(m, {15, 5, 15}, .Pos_Y)
 	testing.expect(t, ok)
-	testing.expect_value(t, vertex_brightness(t, &m, first, {16, 6, 16}), shade_with_ao(.Pos_Y, 2))
-	testing.expect_value(t, vertex_brightness(t, &m, first, {15, 6, 15}), shade_with_ao(.Pos_Y, 3))
+	testing.expect_value(t, vertex_brightness(t, m, first, {16, 6, 16}), shade_with_ao(.Pos_Y, 2))
+	testing.expect_value(t, vertex_brightness(t, m, first, {15, 6, 15}), shade_with_ao(.Pos_Y, 3))
 
 	// Quad split: the dark vertex must be in both triangles.
 	dark := -1
@@ -166,12 +170,12 @@ ao_reads_diagonal_neighbor_chunk :: proc(t: ^testing.T) {
 		}
 		return false
 	}
-	testing.expect(t, tri_has(&m, face_index * 2, dark) && tri_has(&m, face_index * 2 + 1, dark), "quad not split through the dark corner")
+	testing.expect(t, tri_has(m, face_index * 2, dark) && tri_has(m, face_index * 2 + 1, dark), "quad not split through the dark corner")
 
 	// Without the diagonal chunk the same corner is fully lit.
 	n[world.neighborhood_index({1, 0, 1})] = nil
-	mesh.build_chunk_mesh_neighborhood(&n, &m)
-	first, ok = find_face(&m, {15, 5, 15}, .Pos_Y)
+	mesh.build_chunk_mesh_neighborhood(&n, &cm)
+	first, ok = find_face(m, {15, 5, 15}, .Pos_Y)
 	testing.expect(t, ok)
-	testing.expect_value(t, vertex_brightness(t, &m, first, {16, 6, 16}), shade_with_ao(.Pos_Y, 3))
+	testing.expect_value(t, vertex_brightness(t, m, first, {16, 6, 16}), shade_with_ao(.Pos_Y, 3))
 }

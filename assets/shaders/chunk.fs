@@ -1,6 +1,7 @@
 #version 330
 
 // Chunk fragment shader: atlas texture x vertex shade, then distance fog.
+// The renderer also compiles it with `#define CUTOUT` for the cutout pass.
 
 centroid in vec2 fragTexCoord; // position within the tile, 0..1
 flat in vec2 fragTile;         // atlas tile (column, row)
@@ -23,7 +24,13 @@ void main() {
     // so every face shows exactly its 16x16 texture, edge to edge.
     ivec2 local = clamp(ivec2(floor(fragTexCoord * float(TILE_PX))), ivec2(0), ivec2(TILE_PX - 1));
     ivec2 texel = ivec2(fragTile) * TILE_PX + local;
-    vec3 albedo = texelFetch(texture0, texel, 0).rgb;
+    vec4 texel_color = texelFetch(texture0, texel, 0);
+#ifdef CUTOUT
+    // Cutout pass (glass, leaves): texels are either opaque or clear. Only
+    // this variant discards, so the opaque pass keeps early depth testing.
+    if (texel_color.a < 0.5) discard;
+#endif
+    vec3 albedo = texel_color.rgb;
     vec3 color = albedo * fragColor.rgb;
 
     // Horizontal distance, matching the streaming shape (a circle around the
@@ -31,6 +38,6 @@ void main() {
     float dist = length(fragWorldPos.xz - cameraPos.xz);
     float fog = smoothstep(fogStart, fogEnd, dist);
 
-    // Opaque pass: alpha is always 1, whatever the texel's alpha.
+    // Alpha is always 1 (cutout texels that survive the test are opaque).
     finalColor = vec4(mix(color, fogColor, fog), 1.0);
 }

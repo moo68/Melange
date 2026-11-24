@@ -174,14 +174,15 @@ corner_edit_updates_ao_in_the_diagonal_chunk :: proc(t: ^testing.T) {
 	DIAGONAL :: [3]i32{1, 1, 1}
 	floor_top_corner_brightness :: proc(t: ^testing.T, w: ^world.World) -> u8 {
 		hood := world.world_get_neighborhood(w, DIAGONAL)
-		m: mesh.Mesh_Data
-		defer mesh.mesh_data_destroy(&m)
-		mesh.build_chunk_mesh_neighborhood(&hood, &m)
-		first, ok := find_face(&m, {15, 15, 15}, .Pos_Y)
+		cm: mesh.Chunk_Mesh
+		defer mesh.chunk_mesh_destroy(&cm)
+		m := &cm[.Opaque]
+		mesh.build_chunk_mesh_neighborhood(&hood, &cm)
+		first, ok := find_face(m, {15, 15, 15}, .Pos_Y)
 		if !testing.expect(t, ok, "floor top face missing") {
 			return 0
 		}
-		return vertex_brightness(t, &m, first, {16, 16, 16})
+		return vertex_brightness(t, m, first, {16, 16, 16})
 	}
 	before := floor_top_corner_brightness(t, &w)
 	testing.expect_value(t, before, shade_with_ao(.Pos_Y, 3)) // open floor: no occlusion

@@ -15,6 +15,20 @@ Mesh_Data :: struct {
 	indices:   [dynamic]u16,
 }
 
+// Which mesh a face goes into; each pass is drawn with its own shader.
+Pass :: enum u8 {
+	Opaque, // no discard: keeps early depth testing for most of the world
+	Cutout, // alpha-tested (discard), drawn after the opaque pass
+}
+
+// One chunk's meshes, one per pass (world.Block_Render .Opaque / .Cutout).
+Chunk_Mesh :: [Pass]Mesh_Data
+
+// The pass a block's faces go into. Only for blocks that are meshed.
+block_pass :: #force_inline proc "contextless" (id: world.Block_ID) -> Pass {
+	return .Cutout if world.block_props(id).render == .Cutout else .Opaque
+}
+
 // Upper bound on faces a chunk can emit: every internal block pair contributes
 // at most one face, plus every face on the chunk boundary.
 MAX_FACES :: 3 * world.CHUNK_SIZE * world.CHUNK_SIZE * (world.CHUNK_SIZE - 1) + 6 * world.CHUNK_SIZE * world.CHUNK_SIZE
@@ -65,30 +79,40 @@ FACE_SHADE := [Face]u16 {
 }
 
 // ---- Ambient occlusion ---------------------------------------------------------
-// Per vertex, look at the 3 blocks touching that corner on the face's open
-// side: two "side" blocks and one diagonal "corner" block.
-//   ao = 0 if both sides are solid (the corner can't matter: fully enclosed),
-//   else 3 - (side1 + side2 + corner).
-// 3 = fully lit, 0 = darkest. (Mikola Lysenko, "Ambient occlusion for
-// Minecraft-like worlds", 0fps.net.)
+// Per vertex, look at the 2x2 cells around that corner in the layer on the
+// face's open side: the face's own `front` cell, two "side" cells next to it
+// and the diagonal "corner" cell. They form two diagonal pairs, (side1,
+// side2) and (front, corner):
+//   ao = 0 if either pair is fully occluding (enclosed),
+//   else 3 - (side1 + side2 + corner + front).
+// 3 = fully lit, 0 = darkest. Symmetric in the 4 cells, so coplanar faces
+// sharing a corner always agree (no seams). The front cell only occludes
+// when it's a cutout block that casts AO (leaves): an opaque one would have
+// culled the face, and with air in front this is exactly the classic rule
+// (Mikola Lysenko, "Ambient occlusion for Minecraft-like worlds", 0fps.net).
 @(rodata)
 AO_BRIGHTNESS := [4]f32{0.45, 0.65, 0.82, 1.0}
 
-vertex_ao :: #force_inline proc "contextless" (side1, side2, corner: bool) -> u8 {
-	if side1 && side2 {
+vertex_ao :: #force_inline proc "contextless" (side1, side2, corner: bool, front := false) -> u8 {
+	if (side1 && side2) || (front && corner) {
 		return 0
 	}
-	return 3 - u8(side1) - u8(side2) - u8(corner)
+	return 3 - u8(side1) - u8(side2) - u8(corner) - u8(front)
 }
 
-// ---- Padded opacity grid ---------------------------------------------------------
-// The chunk plus a 1-block border from all 26 neighbors, as opacity flags.
+// ---- Padded block grid ---------------------------------------------------------
+// The chunk plus a 1-block border from all 26 neighbors: block IDs plus the
+// properties culling and AO read, looked up once per cell while filling (the
+// face loops then read one byte per neighbor, as fast as the old bool grid).
 // Culling and AO both read it at fixed offsets, so no lookup ever has to
 // branch on chunk borders. Index: x + z*P + y*P*P with x, y, z in 0..17
 // (padded coords = chunk-local coords + 1).
 P  :: world.CHUNK_SIZE + 2
 P3 :: P * P * P
-Padded :: [P3]bool
+Padded :: struct {
+	ids:   [P3]world.Block_ID,
+	flags: [P3]world.Block_Flags,
+}
 
 padded_index :: #force_inline proc "contextless" (p: [3]i32) -> int {
 	return int(p.x + p.z * P + p.y * P * P)
@@ -96,7 +120,7 @@ padded_index :: #force_inline proc "contextless" (p: [3]i32) -> int {
 
 // Fills `pad` from a neighborhood. Missing (nil) chunks are air.
 fill_padded :: proc(pad: ^Padded, n: ^Neighborhood) {
-	pad^ = {}
+	pad^ = {} // AIR, no flags
 	for i in 0 ..< len(Neighborhood) {
 		c := n[i]
 		if c == nil {
@@ -123,7 +147,10 @@ fill_padded :: proc(pad: ^Padded, n: ^Neighborhood) {
 					local := [3]i32{x, y, z}
 					// padded = local + 1 + 16 * offset
 					pp := local + 1 + off * world.CHUNK_SIZE
-					pad[padded_index(pp)] = world.block_is_opaque(world.chunk_get(c, x, y, z))
+					id := world.chunk_get(c, x, y, z)
+					pi := padded_index(pp)
+					pad.ids[pi] = id
+					pad.flags[pi] = world.block_flags(id)
 				}
 			}
 		}
@@ -135,18 +162,20 @@ fill_padded :: proc(pad: ^Padded, n: ^Neighborhood) {
 // Neighborhood alias for convenience.
 Neighborhood :: world.Neighborhood
 
-// Rebuilds `out` for the center chunk of `n`. Only reads `n`. Missing
+// Rebuilds `out` (every pass) for the center chunk of `n`. Only reads `n`. Missing
 // neighbors are treated as air (the renderer only meshes chunks whose 6 face
 // neighbors are loaded; missing edge/corner neighbors only affect AO).
 // `out` is cleared, not freed, so reusing the same Mesh_Data across calls
 // avoids reallocating once its buffers have grown.
-build_chunk_mesh_neighborhood :: proc(n: ^Neighborhood, out: ^Mesh_Data) {
-	clear(&out.positions)
-	clear(&out.normals)
-	clear(&out.texcoords)
-	clear(&out.tiles)
-	clear(&out.colors)
-	clear(&out.indices)
+build_chunk_mesh_neighborhood :: proc(n: ^Neighborhood, out: ^Chunk_Mesh) {
+	for &m in out {
+		clear(&m.positions)
+		clear(&m.normals)
+		clear(&m.texcoords)
+		clear(&m.tiles)
+		clear(&m.colors)
+		clear(&m.indices)
+	}
 
 	chunk := n[world.neighborhood_index({0, 0, 0})]
 	if chunk_fully_air(chunk) {
@@ -167,16 +196,20 @@ build_chunk_mesh_neighborhood :: proc(n: ^Neighborhood, out: ^Mesh_Data) {
 		for z in i32(0) ..< world.CHUNK_SIZE {
 			for x in i32(0) ..< world.CHUNK_SIZE {
 				id := world.chunk_get(chunk, x, y, z)
-				if !world.block_is_opaque(id) {
+				if world.block_props(id).render == .None {
 					continue
 				}
+				dst := &out[block_pass(id)]
+				cull_same := .Cull_Same in world.block_flags(id)
 				pos := [3]i32{x, y, z}
 				pp := pos + 1
 				for face in Face {
-					if pad[padded_index(pp + world.FACE_NORMALS[face])] {
-						continue // hidden by an opaque neighbor block
+					// Same rule as world.face_visible (tested to agree).
+					ni := padded_index(pp + world.FACE_NORMALS[face])
+					if .Opaque in pad.flags[ni] || (cull_same && pad.ids[ni] == id) {
+						continue // hidden by the neighbor block
 					}
-					emit_face(out, &pad, pos, face, id)
+					emit_face(dst, &pad, pos, face, id)
 				}
 			}
 		}
@@ -185,7 +218,7 @@ build_chunk_mesh_neighborhood :: proc(n: ^Neighborhood, out: ^Mesh_Data) {
 
 // Convenience for callers that only have face neighbors (tests): edge and
 // corner neighbors are treated as air.
-build_chunk_mesh :: proc(chunk: ^world.Chunk, neighbors: ^Neighbors, out: ^Mesh_Data) {
+build_chunk_mesh :: proc(chunk: ^world.Chunk, neighbors: ^Neighbors, out: ^Chunk_Mesh) {
 	n := world.neighborhood_from_faces(chunk, neighbors)
 	build_chunk_mesh_neighborhood(&n, out)
 }
@@ -241,6 +274,8 @@ face_ao :: proc "contextless" (pad: ^Padded, pos: [3]i32, face: Face) -> (ao: [4
 	n := world.FACE_NORMALS[face]
 	// The layer of blocks on the face's open side.
 	front := pos + 1 + n
+	// The face's own front cell (leaves can cover a face and still cast AO).
+	front_block := .Casts_AO in pad.flags[padded_index(front)]
 	for corner, i in FACE_CORNERS[face] {
 		// Along each of the face's two tangent axes, step toward this
 		// corner: -1 if the corner is at 0 on that axis, +1 if at 1.
@@ -259,10 +294,10 @@ face_ao :: proc "contextless" (pad: ^Padded, pos: [3]i32, face: Face) -> (ao: [4
 				s2 = step
 			}
 		}
-		side1 := pad[padded_index(front + s1)]
-		side2 := pad[padded_index(front + s2)]
-		corner_block := pad[padded_index(front + s1 + s2)]
-		ao[i] = vertex_ao(side1, side2, corner_block)
+		side1 := .Casts_AO in pad.flags[padded_index(front + s1)]
+		side2 := .Casts_AO in pad.flags[padded_index(front + s2)]
+		corner_block := .Casts_AO in pad.flags[padded_index(front + s1 + s2)]
+		ao[i] = vertex_ao(side1, side2, corner_block, front_block)
 	}
 	return
 }
@@ -295,6 +330,20 @@ emit_face :: proc(out: ^Mesh_Data, pad: ^Padded, pos: [3]i32, face: Face, id: wo
 
 face_count :: proc(m: ^Mesh_Data) -> int {
 	return len(m.indices) / 6
+}
+
+// Faces in every pass.
+chunk_mesh_face_count :: proc(m: ^Chunk_Mesh) -> (n: int) {
+	for &p in m {
+		n += face_count(&p)
+	}
+	return
+}
+
+chunk_mesh_destroy :: proc(m: ^Chunk_Mesh) {
+	for &p in m {
+		mesh_data_destroy(&p)
+	}
 }
 
 mesh_data_destroy :: proc(m: ^Mesh_Data) {
