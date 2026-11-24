@@ -107,6 +107,15 @@ fluid_depth :: proc(b: AABB, data: $T, fluid_top: proc(data: T, cell: [3]i32) ->
 	return clamp(depth, 0, b.max.y - b.min.y)
 }
 
+// Whether point `p` is inside fluid: its cell holds fluid (`fluid_top` > 0,
+// see fluid_depth) and p is below that fluid's top. Used for the camera eye
+// (underwater fog). A point exactly on the lowered surface is above it.
+point_in_fluid :: proc(p: [3]f64, data: $T, fluid_top: proc(data: T, cell: [3]i32) -> f64) -> bool {
+	cell := [3]i32{i32(math.floor(p.x)), i32(math.floor(p.y)), i32(math.floor(p.z))}
+	top := fluid_top(data, cell)
+	return top > 0 && p.y - f64(cell.y) < top
+}
+
 // Advances the body by `dt` seconds. `fluid_top` (optional; nil = no fluid
 // anywhere) gives a cell's fluid height, see fluid_depth; in fluid the body
 // swims (see WATER_CONTROL).

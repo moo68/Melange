@@ -84,7 +84,7 @@ main :: proc() {
 	settings_from := Screen.Title // where Settings returns to
 	vsync_applied := cfg.vsync
 	if opts.direct {
-		if game_open(&game, request_from_opts(opts), &r, cfg) != "" {
+		if game_open(&game, request_from_opts(opts), cfg) != "" {
 			return
 		}
 		has_game = true
@@ -128,14 +128,12 @@ main :: proc() {
 		case .Create_World:
 			create_action = draw_create_world(&cw)
 		case .Playing, .Paused:
-			rl.ClearBackground(render.SKY_COLOR)
 			game_draw(&game, &r, screen == .Playing)
 			if screen == .Paused {
 				pause_action = draw_pause()
 			}
 		case .Settings:
 			if has_game {
-				rl.ClearBackground(render.SKY_COLOR)
 				game_draw(&game, &r, false)
 			}
 			settings_action = draw_settings(&cfg, has_game)
@@ -160,7 +158,7 @@ main :: proc() {
 		case .None:
 		case .Play:
 			name, _ := world_select_playable(&ws)
-			if failure := game_open(&game, {name = name}, &r, cfg); failure == "" {
+			if failure := game_open(&game, {name = name}, cfg); failure == "" {
 				world_select_close(&ws)
 				has_game = true
 				screen = .Playing
@@ -186,7 +184,7 @@ main :: proc() {
 		switch create_action {
 		case .None:
 		case .Create:
-			if failure := game_open(&game, create_world_request(&cw), &r, cfg); failure == "" {
+			if failure := game_open(&game, create_world_request(&cw), cfg); failure == "" {
 				has_game = true
 				screen = .Playing
 			} else {
@@ -214,7 +212,7 @@ main :: proc() {
 		case .Done:
 			cfg = settings.settings_clamp(cfg)
 			if has_game {
-				game_set_render_distance(&game, &r, cfg.render_distance)
+				game_set_render_distance(&game, cfg.render_distance)
 			}
 			if !settings.settings_save(settings.PATH, cfg) {
 				fmt.eprintln("couldn't save", settings.PATH)

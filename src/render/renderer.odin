@@ -23,7 +23,7 @@ CHUNK_SHADER_VS  :: "assets/shaders/chunk.vs"
 CHUNK_SHADER_FS  :: "assets/shaders/chunk.fs"
 
 // Clear color, and the color terrain fades into with distance.
-SKY_COLOR :: rl.Color{135, 190, 235, 255}
+SKY_COLOR :: rl.Color{world.SKY_COLOR.r, world.SKY_COLOR.g, world.SKY_COLOR.b, 255}
 
 // A chunk's GPU meshes, one per pass; a pass without faces has a zero Mesh
 // (vertexCount 0, never uploaded).
@@ -39,6 +39,8 @@ Pass_Shader :: struct {
 	loc_fog_color:  i32,
 	loc_fog_start:  i32,
 	loc_fog_end:    i32,
+	loc_fog_tint:   i32,
+	loc_fog_spherical: i32,
 }
 
 // Polygon offset for the translucent pass (raylib's rlgl doesn't wrap it).
@@ -83,6 +85,9 @@ Renderer :: struct {
 	order:         [dynamic]world.Queued_Chunk, // dirty chunks, nearest first
 	remesh_budget: int,
 	stats:         Stats,
+	// The fog last sent to the shaders (renderer_set_fog).
+	fog:           world.Fog,
+	fog_sent:      bool,
 }
 
 Stats :: struct {
@@ -145,11 +150,9 @@ renderer_init :: proc(r: ^Renderer, allocator := context.allocator) -> Init_Erro
 		r.gl_offset = {}
 	}
 
-	sky := [3]f32{f32(SKY_COLOR.r), f32(SKY_COLOR.g), f32(SKY_COLOR.b)} / 255
-	for &ps in r.shaders {
-		rl.SetShaderValue(ps.shader, ps.loc_fog_color, &sky, .VEC3)
-	}
-	renderer_set_fog(r, 0, 1e9) // effectively off until the caller sets it
+	// Effectively off until the caller sets one.
+	r.fog_sent = false
+	renderer_set_fog(r, {color = world.SKY_COLOR, tint = {1, 1, 1}, start = 0, end = 1e9})
 	return .None
 }
 
@@ -188,16 +191,32 @@ load_pass_shader :: proc(pass: mesh.Pass) -> (ps: Pass_Shader, ok: bool) {
 	ps.loc_fog_color = rl.GetShaderLocation(ps.shader, "fogColor")
 	ps.loc_fog_start = rl.GetShaderLocation(ps.shader, "fogStart")
 	ps.loc_fog_end = rl.GetShaderLocation(ps.shader, "fogEnd")
+	ps.loc_fog_tint = rl.GetShaderLocation(ps.shader, "fogTint")
+	ps.loc_fog_spherical = rl.GetShaderLocation(ps.shader, "fogSpherical")
 	return ps, true
 }
-// Fog fades terrain into SKY_COLOR between `start` and `end` blocks of
-// horizontal distance from the camera.
-renderer_set_fog :: proc(r: ^Renderer, start, end: f32) {
-	start, end := start, end
+// Sets the chunk shaders' fog (see world.Fog). Cheap to call every frame:
+// uniforms are only sent when the fog changed.
+renderer_set_fog :: proc(r: ^Renderer, fog: world.Fog) {
+	if r.fog_sent && r.fog == fog {
+		return
+	}
+	r.fog, r.fog_sent = fog, true
+	color := [3]f32{f32(fog.color.r), f32(fog.color.g), f32(fog.color.b)} / 255
+	tint, start, end := fog.tint, fog.start, fog.end
+	spherical := i32(fog.spherical)
 	for &ps in r.shaders {
+		rl.SetShaderValue(ps.shader, ps.loc_fog_color, &color, .VEC3)
+		rl.SetShaderValue(ps.shader, ps.loc_fog_tint, &tint, .VEC3)
 		rl.SetShaderValue(ps.shader, ps.loc_fog_start, &start, .FLOAT)
 		rl.SetShaderValue(ps.shader, ps.loc_fog_end, &end, .FLOAT)
+		rl.SetShaderValue(ps.shader, ps.loc_fog_spherical, &spherical, .INT)
 	}
+}
+
+// The clear color for the current fog (the sky, or deep water under water).
+renderer_clear_color :: proc(r: ^Renderer) -> rl.Color {
+	return {r.fog.color.r, r.fog.color.g, r.fog.color.b, 255}
 }
 
 // Drops every chunk mesh and pending remesh (closing a world); the shader,

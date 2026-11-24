@@ -14,9 +14,11 @@ uniform sampler2D texture0; // atlas (raylib binds the material's albedo map her
 const int TILE_PX = 16; // pixels per tile side
 
 uniform vec3 cameraPos;
-uniform vec3 fogColor;  // = sky/clear color, so terrain fades into the sky
+uniform vec3 fogColor;  // = clear color (sky, or deep water under water)
 uniform float fogStart; // horizontal distance where fog begins
-uniform float fogEnd;   // horizontal distance where it's fully opaque
+uniform float fogEnd;   // distance where it's fully opaque
+uniform vec3 fogTint;   // multiplied into every texel (white above water)
+uniform int fogSpherical; // 1: 3D distance (under water), 0: horizontal
 
 out vec4 finalColor;
 
@@ -32,11 +34,12 @@ void main() {
     if (texel_color.a < 0.5) discard;
 #endif
     vec3 albedo = texel_color.rgb;
-    vec3 color = albedo * fragColor.rgb;
+    vec3 color = albedo * fragColor.rgb * fogTint;
 
-    // Horizontal distance, matching the streaming shape (a circle around the
-    // camera), so the fog wall lines up with where chunks stop.
-    float dist = length(fragWorldPos.xz - cameraPos.xz);
+    // Above water: horizontal distance, matching the streaming shape (a
+    // circle around the camera), so the fog wall lines up with where chunks
+    // stop. Under water: 3D, so the seabed below fogs too.
+    float dist = fogSpherical != 0 ? length(fragWorldPos - cameraPos) : length(fragWorldPos.xz - cameraPos.xz);
     float fog = smoothstep(fogStart, fogEnd, dist);
 
 #ifdef TRANSLUCENT

@@ -34,11 +34,12 @@ Game :: struct {
 	camera:              rl.Camera3D,
 	target:              geom.Ray_Hit,
 	has_target:          bool,
+	underwater:          bool, // camera eye in water: underwater fog (world.fog_for)
 }
 
 // Opens the world `req` (see session_open). On failure returns why (also
 // printed; temp-allocated).
-game_open :: proc(g: ^Game, req: World_Request, r: ^render.Renderer, cfg: settings.Settings) -> (failure: string) {
+game_open :: proc(g: ^Game, req: World_Request, cfg: settings.Settings) -> (failure: string) {
 	g^ = {}
 	sess, failed := session_open(req, &g.w, &g.pl, &g.debug)
 	if failed != "" {
@@ -49,32 +50,23 @@ game_open :: proc(g: ^Game, req: World_Request, r: ^render.Renderer, cfg: settin
 	stream := world.DEFAULT_STREAM_CONFIG
 	stream.radius = i32(cfg.render_distance)
 	world.streamer_init(&g.s, stream)
-	set_fog(g, r)
 	g.edit = player.DEFAULT_EDIT_STATE
 	g.camera = player.camera_of(&g.pl, cfg.fov, cfg.fov_effects)
 	g.frustum = render.camera_frustum(g.camera)
+	g.underwater = camera_underwater(g)
 	game_capture_mouse(g)
 	return ""
 }
 
 // Changes the render distance of the open world (the streamer restarts its
 // passes; chunks beyond the new range unload over the next frames).
-game_set_render_distance :: proc(g: ^Game, r: ^render.Renderer, chunks: int) {
+game_set_render_distance :: proc(g: ^Game, chunks: int) {
 	if i32(chunks) == g.s.config.radius {
 		return
 	}
 	stream := g.s.config
 	stream.radius = i32(chunks)
-	world.streamer_set_config(&g.s, stream)
-	set_fog(g, r)
-}
-
-// Fully fogged just before chunks can be missing, so the world's edge and
-// chunks popping in are never visible.
-@(private = "file")
-set_fog :: proc(g: ^Game, r: ^render.Renderer) {
-	fog_end := world.stream_meshed_distance(g.s.config)
-	render.renderer_set_fog(r, fog_end * 0.55, fog_end)
+	world.streamer_set_config(&g.s, stream) // game_draw picks up the new fog distance
 }
 
 // Saves and frees the world, and drops its meshes from the renderer.
@@ -111,6 +103,7 @@ game_update :: proc(g: ^Game, r: ^render.Renderer, cfg: settings.Settings) -> bo
 	}
 	player.update_movement(&g.pl, &g.w)
 	g.camera = player.camera_of(&g.pl, cfg.fov, cfg.fov_effects)
+	g.underwater = camera_underwater(g)
 	if rl.IsKeyPressed(.F1) {
 		g.wireframe = !g.wireframe
 	}
@@ -144,9 +137,19 @@ game_update :: proc(g: ^Game, r: ^render.Renderer, cfg: settings.Settings) -> bo
 	return true
 }
 
+// Whether this frame's camera eye is in water.
+@(private = "file")
+camera_underwater :: proc(g: ^Game) -> bool {
+	p := g.camera.position
+	return geom.point_in_fluid({f64(p.x), f64(p.y), f64(p.z)}, &g.w, world.world_fluid_top)
+}
+
 // Draws the world as of the last game_update (between BeginDrawing and
-// EndDrawing). `hud` = crosshair and debug overlay (off while paused).
+// EndDrawing), clearing the background to the fog color first. `hud` =
+// crosshair and debug overlay (off while paused).
 game_draw :: proc(g: ^Game, r: ^render.Renderer, hud: bool) {
+	render.renderer_set_fog(r, world.fog_for(g.s.config, g.underwater))
+	rl.ClearBackground(render.renderer_clear_color(r))
 	rl.BeginMode3D(g.camera)
 	if g.wireframe {
 		rlgl.EnableWireMode()
