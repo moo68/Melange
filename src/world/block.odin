@@ -10,6 +10,7 @@ GRASS :: Block_ID(3)
 GLASS :: Block_ID(4)
 LEAVES :: Block_ID(5)
 WATER :: Block_ID(6)
+SAND :: Block_ID(7)
 
 // Load-bearing: region memory comes from the OS zero-filled, so untouched
 // blocks read as 0. AIR must be 0 for that to mean "empty".
@@ -24,6 +25,7 @@ BLOCK_NAMES := [?]string {
 	GLASS = "glass",
 	LEAVES = "leaves",
 	WATER = "water",
+	SAND = "sand",
 }
 
 block_name :: proc "contextless" (id: Block_ID) -> string {
@@ -71,6 +73,7 @@ BLOCK_PROPS := [?]Block_Props {
 	GLASS  = {.Cutout, {.Solid, .Cull_Same}},
 	LEAVES = {.Cutout, {.Casts_AO, .Solid}},
 	WATER  = {.Translucent, {.Cull_Same, .Replaceable, .Fluid}},
+	SAND   = OPAQUE_CUBE,
 }
 
 // Unknown IDs (e.g. from a newer save) are shown as opaque cubes with the
@@ -170,6 +173,7 @@ TILE_STONE      :: Tile(3)
 TILE_GLASS      :: Tile(4)
 TILE_LEAVES     :: Tile(5)
 TILE_WATER      :: Tile(6)
+TILE_SAND       :: Tile(7)
 TILE_UNDEFINED  :: Tile(255) // magenta/black checker: missing texture
 
 // Atlas tile for each face of each block. AIR is never meshed.
@@ -181,6 +185,7 @@ BLOCK_TILES := [?][Face]Tile {
 	GLASS  = {.Pos_X ..= .Neg_Z = TILE_GLASS},
 	LEAVES = {.Pos_X ..= .Neg_Z = TILE_LEAVES},
 	WATER  = {.Pos_X ..= .Neg_Z = TILE_WATER},
+	SAND   = {.Pos_X ..= .Neg_Z = TILE_SAND},
 	GRASS = {
 		.Pos_Y = TILE_GRASS_TOP,
 		.Neg_Y = TILE_DIRT,

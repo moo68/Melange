@@ -62,7 +62,11 @@ TERRAIN_RIDGE_OCTAVES      :: 3
 TERRAIN_RIDGE_STRENGTH     :: 0.45  // 0 = smooth massifs, 1 = ridges dominate
 TERRAIN_MOUNTAIN_AMPLITUDE :: 95    // peak height above the plains
 
-TERRAIN_DIRT_DEPTH :: 3 // dirt layers under the grass
+TERRAIN_DIRT_DEPTH :: 3 // dirt layers under the grass (sand columns: sand layers under the top)
+// Sand: every non-cliff column under the sea, plus beaches and shores up to
+// this many blocks above the sea level inside the coastal band (land_weight
+// < 1, so low inland plains stay grass).
+TERRAIN_BEACH_HEIGHT :: 2
 // Rules for exposing stone at the surface (no grass/dirt):
 TERRAIN_STONE_LINE :: 34 // columns at or above this height are bare stone
 TERRAIN_CLIFF_STEP :: 3  // ...and so are columns this many blocks above/below a neighbor
@@ -147,8 +151,15 @@ terrain_mountain_mask :: proc(seed: i64, x, z: i32) -> f32 {
 // Pure: depends only on seed and column, so it's the same no matter which
 // chunk asks, and safe on any thread.
 terrain_height :: proc(seed: i64, x, z: i32) -> i32 {
+	h, _ := terrain_sample(seed, x, z)
+	return h
+}
+
+// terrain_height plus the column's land weight (computed anyway), so the
+// surface classification needn't sample the continentalness again.
+terrain_sample :: proc(seed: i64, x, z: i32) -> (height: i32, land_weight: f32) {
 	pos := noise.Vec2{f64(x), f64(z)}
-	land_weight := terrain_land_weight(seed, x, z)
+	land_weight = terrain_land_weight(seed, x, z)
 	// Each side is only sampled where it contributes.
 	floor := f32(0)
 	if land_weight < 1 {
@@ -160,7 +171,7 @@ terrain_height :: proc(seed: i64, x, z: i32) -> i32 {
 		h = math.lerp(floor, terrain_land_height(seed, pos), land_weight)
 	}
 	// Noise is only approximately in range; clamp so the bounds above are exact.
-	return clamp(i32(math.floor(h)), TERRAIN_MIN_HEIGHT, TERRAIN_MAX_HEIGHT)
+	return clamp(i32(math.floor(h)), TERRAIN_MIN_HEIGHT, TERRAIN_MAX_HEIGHT), land_weight
 }
 
 // The land surface before blending toward the ocean floor (plains + mountains).
@@ -186,24 +197,29 @@ terrain_land_height :: proc(seed: i64, pos: noise.Vec2) -> f32 {
 // What a column looks like at the surface.
 Column :: struct {
 	height:     i32,  // Y of the top solid block
-	bare_stone: bool, // no grass/dirt cover: peak above the stone line, or a cliff
+	bare_stone: bool, // no cover: peak above the stone line, or a cliff (also underwater)
+	sand:       bool, // sand instead of grass/dirt: seabed, beach or shore (never with bare_stone)
 }
 
-// Classify a column from its height and its 4 horizontal neighbors' heights.
-column_from_heights :: proc "contextless" (h, east, west, south, north: i32) -> Column {
+// Classify a column from its height, its 4 horizontal neighbors' heights and
+// whether it's in the coastal band / ocean (`coastal` = land_weight < 1).
+column_from_heights :: proc "contextless" (h, east, west, south, north: i32, coastal: bool) -> Column {
 	step := max(abs(east - h), abs(west - h), abs(south - h), abs(north - h))
-	return {h, h >= TERRAIN_STONE_LINE || step >= TERRAIN_CLIFF_STEP}
+	bare := h >= TERRAIN_STONE_LINE || step >= TERRAIN_CLIFF_STEP
+	return {h, bare, !bare && coastal && h <= TERRAIN_SEA_LEVEL + TERRAIN_BEACH_HEIGHT}
 }
 
 // Single-column version (samples 5 heights). generate_chunk uses a shared
 // height grid instead, but must agree with this exactly.
 terrain_column :: proc(seed: i64, x, z: i32) -> Column {
+	h, land_weight := terrain_sample(seed, x, z)
 	return column_from_heights(
-		terrain_height(seed, x, z),
+		h,
 		terrain_height(seed, x + 1, z),
 		terrain_height(seed, x - 1, z),
 		terrain_height(seed, x, z + 1),
 		terrain_height(seed, x, z - 1),
+		land_weight < 1,
 	)
 }
 
@@ -215,6 +231,8 @@ column_block :: proc "contextless" (col: Column, wy: i32) -> Block_ID {
 		return WATER if wy <= TERRAIN_SEA_LEVEL else AIR
 	case col.bare_stone:
 		return STONE
+	case col.sand:
+		return SAND if wy >= col.height - TERRAIN_DIRT_DEPTH else STONE
 	case wy == col.height:
 		return GRASS
 	case wy >= col.height - TERRAIN_DIRT_DEPTH:
@@ -238,9 +256,14 @@ column_heights_compute :: proc(out: ^Column_Heights, seed: i64, cx, cz: i32) {
 	P :: CHUNK_SIZE + 2
 	ox, oz := cx * CHUNK_SIZE, cz * CHUNK_SIZE
 	heights: [P][P]i32 // [z+1][x+1]
+	coastal: [CHUNK_SIZE][CHUNK_SIZE]bool // [z][x], the 16x16 only
 	for z in i32(-1) ..= CHUNK_SIZE {
 		for x in i32(-1) ..= CHUNK_SIZE {
-			heights[z + 1][x + 1] = terrain_height(seed, ox + x, oz + z)
+			h, land_weight := terrain_sample(seed, ox + x, oz + z)
+			heights[z + 1][x + 1] = h
+			if x >= 0 && x < CHUNK_SIZE && z >= 0 && z < CHUNK_SIZE {
+				coastal[z][x] = land_weight < 1
+			}
 		}
 	}
 	out.max_height = min(i32)
@@ -252,6 +275,7 @@ column_heights_compute :: proc(out: ^Column_Heights, seed: i64, cx, cz: i32) {
 				heights[z][x - 1],
 				heights[z + 1][x],
 				heights[z - 1][x],
+				coastal[z - 1][x - 1],
 			)
 			out.columns[z - 1][x - 1] = col
 			out.max_height = max(out.max_height, col.height)

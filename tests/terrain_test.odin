@@ -57,6 +57,8 @@ expect_columns_layered :: proc(t: ^testing.T, seed: i64, cx, cz: i32) {
 					want = world.WATER if wy <= world.TERRAIN_SEA_LEVEL else world.AIR
 				case col.bare_stone:
 					want = world.STONE
+				case col.sand:
+					want = world.SAND if wy >= h - world.TERRAIN_DIRT_DEPTH else world.STONE
 				case wy == h:
 					want = world.GRASS
 				case wy >= h - world.TERRAIN_DIRT_DEPTH:
@@ -75,9 +77,11 @@ columns_are_layered_correctly_across_chunks :: proc(t: ^testing.T) {
 	SEED :: 7
 	// A plains chunk...
 	expect_columns_layered(t, SEED, 1, -2)
-	// ...an ocean chunk (water over the floor)...
+	// ...an ocean chunk (water over a sand floor), a beach chunk...
 	ocean := find_column(SEED, proc(h: i32) -> bool {return h < world.TERRAIN_SEA_LEVEL - 8})
 	expect_columns_layered(t, SEED, ocean.x >> 4, ocean.y >> 4)
+	beach := find_beach(SEED)
+	expect_columns_layered(t, SEED, beach.x >> 4, beach.y >> 4)
 	// ...and a mountain chunk (search outward for one with a tall column).
 	for r := i32(0); r < 400; r += 1 {
 		x := r * 16
@@ -93,16 +97,66 @@ columns_are_layered_correctly_across_chunks :: proc(t: ^testing.T) {
 column_classification :: proc(t: ^testing.T) {
 	CLIFF :: i32(world.TERRAIN_CLIFF_STEP)
 	// Flat, low: grass-covered.
-	testing.expect(t, !world.column_from_heights(5, 5, 5, 5, 5).bare_stone)
+	testing.expect(t, !world.column_from_heights(5, 5, 5, 5, 5, false).bare_stone)
 	// Steps just under the cliff threshold: still covered.
-	testing.expect(t, !world.column_from_heights(5, 5 + CLIFF - 1, 5 - (CLIFF - 1), 5, 5).bare_stone)
+	testing.expect(t, !world.column_from_heights(5, 5 + CLIFF - 1, 5 - (CLIFF - 1), 5, 5, false).bare_stone)
 	// Cliff (threshold or more to a neighbor, up or down): bare stone.
-	testing.expect(t, world.column_from_heights(5, 5, 5, 5 + CLIFF, 5).bare_stone)
-	testing.expect(t, world.column_from_heights(5, 5 - CLIFF, 5, 5, 5).bare_stone)
+	testing.expect(t, world.column_from_heights(5, 5, 5, 5 + CLIFF, 5, false).bare_stone)
+	testing.expect(t, world.column_from_heights(5, 5 - CLIFF, 5, 5, 5, false).bare_stone)
 	// At/above the stone line: bare stone even when flat.
 	line := i32(world.TERRAIN_STONE_LINE)
-	testing.expect(t, world.column_from_heights(line, line, line, line, line).bare_stone)
-	testing.expect(t, !world.column_from_heights(line - 1, line - 1, line - 1, line - 1, line - 1).bare_stone)
+	testing.expect(t, world.column_from_heights(line, line, line, line, line, false).bare_stone)
+	testing.expect(t, !world.column_from_heights(line - 1, line - 1, line - 1, line - 1, line - 1, false).bare_stone)
+
+	// Sand: coastal (or underwater) and at most BEACH_HEIGHT above the sea,
+	// never on a cliff, never inland.
+	SEA :: i32(world.TERRAIN_SEA_LEVEL)
+	BEACH :: SEA + world.TERRAIN_BEACH_HEIGHT
+	sandy :: proc(h: i32, coastal: bool) -> world.Column {
+		return world.column_from_heights(h, h, h, h, h, coastal)
+	}
+	testing.expect(t, sandy(BEACH, true).sand && !sandy(BEACH, true).bare_stone, "beach at the top of the band")
+	testing.expect(t, sandy(SEA, true).sand, "shore at sea level")
+	testing.expect(t, sandy(SEA - 15, true).sand, "seabed")
+	testing.expect(t, !sandy(BEACH + 1, true).sand, "above the beach band: grass")
+	testing.expect(t, !sandy(BEACH, false).sand, "low inland plains: grass")
+	cliff := world.column_from_heights(SEA - 5, SEA - 5 + CLIFF, SEA - 5, SEA - 5, SEA - 5, true)
+	testing.expect(t, cliff.bare_stone && !cliff.sand, "underwater cliff: bare stone, not sand")
+}
+
+// Every non-cliff seabed column is sand, beaches exist just above the sea,
+// and no sand appears inland or above the beach band.
+@(test)
+sand_on_seabeds_and_beaches :: proc(t: ^testing.T) {
+	seabed, sandy_seabed, beach := 0, 0, 0
+	for z := i32(-2000); z < 2000; z += 13 {
+		for x := i32(-2000); x < 2000; x += 13 {
+			col := world.terrain_column(1337, x, z)
+			if col.sand {
+				if col.height > world.TERRAIN_SEA_LEVEL + world.TERRAIN_BEACH_HEIGHT {
+					testing.fail_now(t, "sand above the beach band")
+				}
+				if world.terrain_land_weight(1337, x, z) >= 1 {
+					testing.fail_now(t, "sand inland")
+				}
+				if col.bare_stone {
+					testing.fail_now(t, "sand on bare stone")
+				}
+			}
+			if col.height < world.TERRAIN_SEA_LEVEL && !col.bare_stone {
+				seabed += 1
+				if col.sand {
+					sandy_seabed += 1
+				}
+			}
+			if col.sand && col.height >= world.TERRAIN_SEA_LEVEL {
+				beach += 1
+			}
+		}
+	}
+	testing.expect(t, seabed > 1000, "the sample has ocean")
+	testing.expect_value(t, sandy_seabed, seabed)
+	testing.expectf(t, beach > 100, "beaches: %d columns", beach)
 }
 
 // The rules should actually expose some stone, but not most of the surface.
@@ -357,4 +411,57 @@ column_max_height_and_sky_skip :: proc(t: ^testing.T) {
 			testing.fail_now(t, "chunk above the column's max height isn't empty")
 		}
 	}
+}
+
+// A column with sand above the sea (a beach), scanning out from the origin.
+find_beach :: proc(seed: i64) -> [2]i32 {
+	for r := i32(0); r < 4000; r += 1 {
+		for p in ([4][2]i32{{r, 0}, {-r, 0}, {0, r}, {0, -r}}) {
+			col := world.terrain_column(seed, p.x, p.y)
+			if col.sand && col.height >= world.TERRAIN_SEA_LEVEL {
+				return p
+			}
+		}
+	}
+	panic("no beach found")
+}
+
+@(test)
+sand_block :: proc(t: ^testing.T) {
+	testing.expect_value(t, world.block_props(world.SAND), world.OPAQUE_CUBE)
+	testing.expect_value(t, world.block_tile(world.SAND, .Pos_Y), world.TILE_SAND)
+	testing.expect_value(t, world.block_name(world.SAND), "sand")
+}
+
+// The shared per-chunk grid (column_heights_compute) must classify every
+// column exactly like the single-column terrain_column, including sand at
+// the inner edge of the coastal band: 40 chunk columns in a line through a
+// beach, plus the chunk around a pinned spot (seed 1337, x -1721, z -9410)
+// where two height-2 columns differ only by being in the band or not (sand
+// next to grass), which is rare on real terrain.
+@(test)
+chunk_columns_match_single_columns_across_a_coast :: proc(t: ^testing.T) {
+	SEED :: 1337
+	ch := new(world.Column_Heights)
+	defer free(ch)
+	check_chunk :: proc(t: ^testing.T, ch: ^world.Column_Heights, cx, cz: i32) {
+		world.column_heights_compute(ch, SEED, cx, cz)
+		for z in i32(0) ..< 16 {
+			for x in i32(0) ..< 16 {
+				if ch.columns[z][x] != world.terrain_column(SEED, cx * 16 + x, cz * 16 + z) {
+					testing.fail_now(t, "chunk grid and terrain_column disagree")
+				}
+			}
+		}
+	}
+	beach := find_beach(SEED)
+	for i in i32(-20) ..< 20 {
+		check_chunk(t, ch, (beach.x >> 4) + i, beach.y >> 4)
+	}
+	EDGE :: [2]i32{-1721, -9410}
+	a := world.terrain_column(SEED, EDGE.x, EDGE.y)
+	b := world.terrain_column(SEED, EDGE.x + 1, EDGE.y)
+	testing.expect(t, a.height == 2 && b.height == 2, "the pinned spot is still at height 2 (terrain changed? find a new one)")
+	testing.expect(t, a.sand && !b.sand, "sand ends exactly at the coastal band's edge")
+	check_chunk(t, ch, EDGE.x >> 4, EDGE.y >> 4)
 }

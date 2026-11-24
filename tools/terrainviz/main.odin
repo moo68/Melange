@@ -1,8 +1,8 @@
 // Terrain preview: renders the world generator's heightmap to PNGs and prints
 // statistics, without opening a window. Run via `./run.sh terrain-preview`.
 //
-//   map.png      hill-shaded top-down map (grass / bare stone / water by
-//                depth), 1 px = STEP blocks
+//   map.png      hill-shaded top-down map (grass / sand / bare stone / water
+//                by depth), 1 px = STEP blocks
 //   overview.png the same at 1 px = OVERVIEW_STEP blocks (oceans and continents)
 //   profile.png  1:1 side view through the tallest peak on the map
 //
@@ -109,6 +109,8 @@ render_map :: proc(opts: Options, step: int, file: string) -> (peak: [2]i32) {
 				shade = 1
 			} else if col.bare_stone {
 				base = {135, 130, 128}
+			} else if col.sand {
+				base = {222, 206, 156}
 			} else {
 				t := clamp(f32(col.height - world.TERRAIN_MIN_HEIGHT) / 40, 0, 1)
 				base = {70 + 40 * t, 150 - 20 * t, 55}
@@ -137,7 +139,9 @@ render_profile :: proc(opts: Options, peak: [2]i32) {
 		}
 		for y in max(top, 0) ..< PROFILE_H {
 			c := rl.Color{120, 120, 120, 255}
-			if !col.bare_stone && y == top {
+			if col.sand && y <= top + world.TERRAIN_DIRT_DEPTH {
+				c = {222, 206, 156, 255}
+			} else if !col.bare_stone && y == top {
 				c = {80, 160, 60, 255}
 			} else if !col.bare_stone && y <= top + world.TERRAIN_DIRT_DEPTH {
 				c = {120, 85, 60, 255}
@@ -151,7 +155,7 @@ render_profile :: proc(opts: Options, peak: [2]i32) {
 // Area fractions, height percentiles and step histograms over a 6000-block
 // square; the water fraction over a 40,000-block square (oceans are huge).
 print_stats :: proc(seed: i64) {
-	n, mountain, foothill, bare := 0, 0, 0, 0
+	n, mountain, foothill, bare, beach, land, seabed, sandy_seabed := 0, 0, 0, 0, 0, 0, 0, 0
 	steps_plains, steps_mountain, steps_coast: [12]int
 	all: [dynamic]i32
 	defer delete(all)
@@ -169,6 +173,17 @@ print_stats :: proc(seed: i64) {
 			}
 			if col.bare_stone {
 				bare += 1
+			}
+			if col.height >= world.TERRAIN_SEA_LEVEL {
+				land += 1
+				if col.sand {
+					beach += 1
+				}
+			} else {
+				seabed += 1
+				if col.sand {
+					sandy_seabed += 1
+				}
 			}
 			lw := world.terrain_land_weight(seed, x, z)
 			if lw < 1 {
@@ -218,6 +233,7 @@ print_stats :: proc(seed: i64) {
 	print_steps("plains  ", steps_plains)
 	print_steps("mountain", steps_mountain)
 	print_steps("coast+sea", steps_coast)
+	fmt.printfln("sand: beaches/shores %.1f%% of land, %.1f%% of the seabed (the rest: underwater cliffs)", pct(beach, land), pct(sandy_seabed, seabed))
 
 	// Water over a big area: this seed, then the mean over 8 seeds.
 	water_stats(seed, true)

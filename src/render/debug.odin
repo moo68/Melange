@@ -47,7 +47,7 @@ draw_debug_overlay :: proc(r: ^Renderer, w: ^world.World, s: ^world.Streamer, ca
 	} else {
 		line(&o, 164, "target none")
 	}
-	line(&o, 186, "place %s  (1 stone, 2 dirt, 3 grass, 4 glass, 5 leaves, 6 water)", world.block_name(selected))
+	line(&o, 186, "place %s  (1 stone, 2 dirt, 3 grass, 4 glass, 5 leaves, 6 water, 7 sand)", world.block_name(selected))
 	line(&o, 208, "edits %d in %d chunks", w.edit_count, len(w.edits))
 	line(&o, 238, "F1 wireframe [%s]", "on" if wireframe else "off")
 	line(&o, 260, "F2 freeze culling [%s]", "on" if cull_frozen else "off")
